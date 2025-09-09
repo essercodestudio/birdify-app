@@ -1,0 +1,5 @@
+{
+  "name": "Pine Hill Score: Realtime Golf Scoring",
+  "description": "A PWA for real-time golf stroke tracking, leaderboards, and tournament management, built with React, Tailwind CSS, and a mock Supabase backend.",
+  "requestFramePermissions": []
+}
