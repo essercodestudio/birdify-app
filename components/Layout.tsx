@@ -1,3 +1,5 @@
+// components/Layout.tsx - ATUALIZADO
+
 import React, { ReactNode, useContext } from 'react';
 import { AuthContext } from '../context/AuthContext';
 import GolfPinIcon from './icons/GolfPinIcon';
@@ -17,7 +19,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center">
               <GolfPinIcon className="h-8 w-8 text-green-400" />
-              <span className="ml-3 text-2xl font-bold text-white">Pine Hill Score</span>
+              {/* NOME ALTERADO AQUI */}
+              <span className="ml-3 text-2xl font-bold text-white">Birdify</span>
             </div>
             {user && (
               <div className="flex items-center space-x-4">
@@ -32,7 +35,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         {children}
       </main>
       <footer className="bg-gray-800 text-center py-4 text-sm text-gray-500">
-        <p>&copy; 2024 Pine Hill Score. Todos os direitos reservados.</p>
+        {/* NOME ALTERADO AQUI */}
+        <p>&copy; 2024 Birdify. Todos os direitos reservados.</p>
       </footer>
     </div>
   );

@@ -230,7 +230,7 @@ app.get('/api/tournaments/:tournamentId/export-groups', async (req: Request, res
         }, {} as Record<string, Map<number, any>>);
 
         const workbook = new ExcelJS.Workbook();
-        workbook.creator = 'Pine Hill Score';
+        workbook.creator = 'Birdify';
         const sheet = workbook.addWorksheet('Horários de Saída');
 
         sheet.mergeCells('A1:D1');
@@ -749,7 +749,7 @@ app.get('/api/tournaments/:tournamentId/export', async (req: Request, res: Respo
         await connection.end();
 
         const workbook = new ExcelJS.Workbook();
-        workbook.creator = 'Pine Hill Score';
+        workbook.creator = 'Birdify';
 
         const addDetailedSheet = (sheetName: string, players: any[], includeTiebreakCol: boolean) => {
             const sheet = workbook.addWorksheet(sheetName);

@@ -1,4 +1,4 @@
-// screens/LoginScreen.tsx - VERSÃO COM CAMPO DE GÉNERO
+// screens/LoginScreen.tsx - ATUALIZADO
 
 import React, { useState, useContext } from 'react';
 import axios from 'axios';
@@ -14,13 +14,13 @@ const LoginScreen: React.FC = () => {
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [cpf, setCpf] = useState('');
-  const [gender, setGender] = useState('Male'); // Novo estado para o género
+  const [gender, setGender] = useState('Male'); 
 
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const { login } = useContext(AuthContext);
 
-  const handleLogin = async (e: React.FormEvent) => { /* ...código existente sem alterações... */ 
+  const handleLogin = async (e: React.FormEvent) => { 
     e.preventDefault();
     setIsLoading(true);
     setError(null);
@@ -39,16 +39,15 @@ const LoginScreen: React.FC = () => {
     }
   };
   
-  // ATUALIZADO: Agora envia o 'gender' no registo
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!fullName || !cpf || !email || !password || !gender) { // Adicionada validação de 'gender'
+    if (!fullName || !cpf || !email || !password || !gender) { 
       setError('Por favor, preencha todos os campos.');
       return;
     }
     setIsLoading(true);
     setError(null);
-    const newPlayerData = { fullName, cpf, email, password, gender }; // Adicionado 'gender'
+    const newPlayerData = { fullName, cpf, email, password, gender };
     try {
       await axios.post('http://localhost:3001/api/players', newPlayerData);
       const response = await axios.post('http://localhost:3001/api/login', { email, password });
@@ -65,7 +64,7 @@ const LoginScreen: React.FC = () => {
     }
   };
   
-  const handleCpfChange = (e: React.ChangeEvent<HTMLInputElement>) => { /* ...código existente sem alterações... */ 
+  const handleCpfChange = (e: React.ChangeEvent<HTMLInputElement>) => { 
     const value = e.target.value;
     if (/^\d*$/.test(value) && value.length <= 11) {
       setCpf(value);
@@ -76,10 +75,10 @@ const LoginScreen: React.FC = () => {
     <div className="flex flex-col items-center justify-center min-h-[70vh]">
       <div className="w-full max-w-md p-8 space-y-6 bg-gray-800 rounded-xl shadow-lg">
         <div className="text-center">
-            {/* ...cabeçalho sem alterações... */}
             <GolfPinIcon className="mx-auto h-12 w-12 text-green-400" />
             <h2 className="mt-6 text-3xl font-extrabold text-white">
-                {isRegistering ? 'Crie a sua Conta' : 'Acesse o Pine Hill Score'}
+                {/* NOME ALTERADO AQUI */}
+                {isRegistering ? 'Crie a sua Conta' : 'Acesse o Birdify'}
             </h2>
         </div>
         <form className="mt-8 space-y-4" onSubmit={isRegistering ? handleRegister : handleLogin}>
@@ -106,7 +105,6 @@ const LoginScreen: React.FC = () => {
                         onChange={handleCpfChange}
                         maxLength={11}
                       />
-                    {/* NOVO CAMPO: Seletor de Categoria/Género */}
                     <div>
                         <label htmlFor="gender" className="block text-sm font-medium text-gray-400">Categoria</label>
                         <select
