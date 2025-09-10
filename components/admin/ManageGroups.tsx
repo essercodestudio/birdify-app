@@ -1,4 +1,4 @@
-// components/admin/ManageGroups.tsx - VERSÃO COMPLETA E CORRIGIDA
+// components/admin/ManageGroups.tsx - VERSÃO COM BOTÃO DE EXPORTAR GRUPOS
 
 import React, { useState, useEffect, useMemo } from "react";
 import axios from "axios";
@@ -27,6 +27,7 @@ const ManageGroups: React.FC = () => {
     null
   );
   const [generatedCode, setGeneratedCode] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
     const fetchTournaments = async () => {
@@ -74,12 +75,43 @@ const ManageGroups: React.FC = () => {
   useEffect(() => {
     fetchTournamentData(selectedTournamentId);
   }, [selectedTournamentId]);
+  
+  // NOVA FUNÇÃO PARA EXPORTAR GRUPOS
+  const handleExportGroups = async () => {
+      if (!selectedTournamentId) return;
+      try {
+          const response = await axios.get(`http://localhost:3001/api/tournaments/${selectedTournamentId}/export-groups`, {
+              responseType: 'blob',
+          });
+          const url = window.URL.createObjectURL(new Blob([response.data]));
+          const link = document.createElement('a');
+          link.href = url;
+          link.setAttribute('download', 'Horarios_de_Saida.xlsx');
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+      } catch (error) {
+          alert('Erro ao gerar o relatório de grupos.');
+          console.error(error);
+      }
+  };
 
   const filteredPlayers = useMemo(() => {
-    return availablePlayers.filter(
+    let playersByCategory = availablePlayers.filter(
       (player: any) => player.gender === groupCategory
     );
-  }, [availablePlayers, groupCategory]);
+
+    if (!searchTerm.trim()) {
+      return playersByCategory;
+    }
+
+    const lowercasedFilter = searchTerm.toLowerCase();
+    return playersByCategory.filter(player =>
+      player.fullName.toLowerCase().includes(lowercasedFilter) ||
+      (player.cpf && player.cpf.replace(/[.-]/g, '').includes(lowercasedFilter.replace(/[.-]/g, '')))
+    );
+  }, [availablePlayers, groupCategory, searchTerm]);
+
 
   const handlePlayerSelectionChange = (
     playerId: string,
@@ -138,6 +170,7 @@ const ManageGroups: React.FC = () => {
       fetchTournamentData(selectedTournamentId);
       setSelectedPlayers({});
       setResponsiblePlayerId(null);
+      setSearchTerm(''); // Limpa a pesquisa após criar o grupo
     } catch (error) {
       alert("Falha ao criar o grupo.");
       console.error(error);
@@ -164,25 +197,35 @@ const ManageGroups: React.FC = () => {
         <h3 className="text-xl font-bold text-green-400 mb-4">
           Montar Grupos de Jogadores
         </h3>
-        <label
-          htmlFor="selectTournament"
-          className="block text-sm font-medium text-gray-300 mb-1"
-        >
-          1. Selecione o Torneio
-        </label>
-        <select
-          id="selectTournament"
-          value={selectedTournamentId}
-          onChange={(e) => setSelectedTournamentId(e.target.value)}
-          className="w-full sm:w-1/2 px-3 py-2 border border-gray-600 bg-gray-900 text-white rounded-md"
-        >
-          <option value="">-- Selecione --</option>
-          {tournaments.map((t: any) => (
-            <option key={t.id} value={t.id}>
-              {t.name}
-            </option>
-          ))}
-        </select>
+        <div className="flex items-center gap-4">
+            <div className="flex-grow">
+                <label
+                htmlFor="selectTournament"
+                className="block text-sm font-medium text-gray-300 mb-1"
+                >
+                1. Selecione o Torneio
+                </label>
+                <select
+                id="selectTournament"
+                value={selectedTournamentId}
+                onChange={(e) => setSelectedTournamentId(e.target.value)}
+                className="w-full sm:w-1/2 px-3 py-2 border border-gray-600 bg-gray-900 text-white rounded-md"
+                >
+                <option value="">-- Selecione --</option>
+                {tournaments.map((t: any) => (
+                    <option key={t.id} value={t.id}>
+                    {t.name}
+                    </option>
+                ))}
+                </select>
+            </div>
+            {/* NOVO BOTÃO DE EXPORTAÇÃO */}
+            <div className="self-end">
+                <Button onClick={handleExportGroups} disabled={!selectedTournamentId}>
+                    Exportar Grupos
+                </Button>
+            </div>
+        </div>
       </div>
 
       {selectedTournamentId && (
@@ -303,7 +346,15 @@ const ManageGroups: React.FC = () => {
               <label className="block text-sm font-medium text-gray-300 mb-2">
                 Selecione Jogadores Disponíveis
               </label>
-              <div className="space-y-3">
+              <input 
+                type="text"
+                placeholder="Buscar por nome ou CPF..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full sm:w-2/3 mb-4 px-3 py-2 border border-gray-600 bg-gray-900 text-white rounded-md"
+              />
+
+              <div className="space-y-3 max-h-80 overflow-y-auto pr-2">
                 {filteredPlayers.map((player) => (
                   <div key={player.id} className="p-3 bg-gray-800 rounded-lg">
                     <div className="flex items-center">
@@ -360,10 +411,18 @@ const ManageGroups: React.FC = () => {
                     )}
                   </div>
                 ))}
+                 {filteredPlayers.length === 0 && (
+                  <p className="text-gray-400 text-center py-4">Nenhum jogador encontrado para esta categoria ou pesquisa.</p>
+                )}
               </div>
             </div>
             <Button type="submit">Criar Grupo</Button>
-            {generatedCode && <p>Código: {generatedCode}</p>}
+            {generatedCode && (
+                <div className="mt-4 p-4 bg-green-900/50 border border-green-500 rounded-lg text-center">
+                    <p className="text-green-300">Grupo criado com sucesso! Compartilhe o código com o marcador:</p>
+                    <p className="text-3xl font-bold font-mono tracking-widest text-white mt-2 bg-gray-900 inline-block px-4 py-2 rounded">{generatedCode}</p>
+                </div>
+            )}
           </form>
         </>
       )}

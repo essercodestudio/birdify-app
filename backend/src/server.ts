@@ -1,4 +1,4 @@
-// backend/src.server.ts - VERSÃO COMPLETA E VERIFICADA
+// backend/src.server.ts - VERSÃO COMPLETA E FINAL COM TODAS AS FUNCIONALIDADES
 
 import express, { Request, Response } from 'express';
 import cors from 'cors';
@@ -102,16 +102,29 @@ app.delete('/api/courses/:id', async (req: Request, res: Response) => {
 });
 
 // --- ROTAS PARA TORNEIOS (TOURNAMENTS) ---
+// backend/src/server.ts -> Rota GET /api/tournaments ATUALIZADA
+
 app.get('/api/tournaments', async (req: Request, res: Response) => {
     try {
+        const { status } = req.query; // Pega o parâmetro opcional 'status'
         const connection = await mysql.createConnection(dbConfig);
-        const query = `
-        SELECT t.id, t.name, t.date, t.status, c.name AS courseName
-        FROM tournaments t
-        LEFT JOIN courses c ON t.courseId = c.id
-        ORDER BY t.date DESC
+        
+        let query = `
+            SELECT t.id, t.name, t.date, t.status, c.name AS courseName
+            FROM tournaments t
+            LEFT JOIN courses c ON t.courseId = c.id
         `;
-        const [rows] = await connection.execute(query);
+        const params: string[] = [];
+
+        // Se o status for fornecido na URL (ex: /api/tournaments?status=active), adiciona o filtro
+        if (status) {
+            query += ' WHERE t.status = ?';
+            params.push(status as string);
+        }
+
+        query += ' ORDER BY t.date DESC';
+        
+        const [rows] = await connection.execute(query, params);
         await connection.end();
         res.json(rows);
     } catch (error) {
@@ -121,13 +134,13 @@ app.get('/api/tournaments', async (req: Request, res: Response) => {
 });
 app.post('/api/tournaments', async (req: Request, res: Response) => {
     try {
-        const { name, date, courseId } = req.body;
+        const { name, date, courseId, startTime } = req.body;
         if (!name || !date || !courseId) {
         return res.status(400).json({ error: 'Nome, data e campo são obrigatórios.' });
         }
         const connection = await mysql.createConnection(dbConfig);
-        const query = 'INSERT INTO tournaments (name, date, courseId) VALUES (?, ?, ?)';
-        const [result]: any = await connection.execute(query, [name, date, courseId]);
+        const query = 'INSERT INTO tournaments (name, date, courseId, startTime) VALUES (?, ?, ?, ?)';
+        const [result]: any = await connection.execute(query, [name, date, courseId, startTime || null]);
         await connection.end();
         res.status(201).json({ id: result.insertId, ...req.body });
     } catch (error) {
@@ -176,6 +189,120 @@ app.get('/api/tournaments/:tournamentId/tees', async (req: Request, res: Respons
     } catch (error) {
         console.error('Erro ao buscar tees do torneio:', error);
         res.status(500).json({ error: 'Erro ao buscar tees.' });
+    }
+});
+app.get('/api/tournaments/:tournamentId/export-groups', async (req: Request, res: Response) => {
+    try {
+        const { tournamentId } = req.params;
+        const connection = await mysql.createConnection(dbConfig);
+
+        const [tournamentRows]: any[] = await connection.execute('SELECT name, date, startTime FROM tournaments WHERE id = ?', [tournamentId]);
+        if (tournamentRows.length === 0) {
+            await connection.end();
+            return res.status(404).json({ error: 'Torneio não encontrado.' });
+        }
+        const tournament = tournamentRows[0];
+        const TEE_TIME_INTERVAL = 10;
+
+        const [groupRows]: any[] = await connection.execute(`
+            SELECT g.id as groupId, g.startHole, g.accessCode, p.fullName
+            FROM \`groups\` g
+            JOIN group_players gp ON g.id = gp.groupId
+            JOIN players p ON gp.playerId = p.id
+            WHERE g.tournamentId = ?
+            ORDER BY g.startHole, g.id, p.fullName;
+        `, [tournamentId]);
+        
+        await connection.end();
+
+        if (groupRows.length === 0) {
+            return res.status(404).json({ error: 'Nenhum grupo encontrado para este torneio.' });
+        }
+
+        const groupsByHole = groupRows.reduce((acc, row) => {
+            const { startHole, groupId, ...playerData } = row;
+            if (!acc[startHole]) acc[startHole] = new Map();
+            if (!acc[startHole].has(groupId)) {
+                acc[startHole].set(groupId, { ...playerData, players: [] });
+            }
+            acc[startHole].get(groupId).players.push(playerData.fullName);
+            return acc;
+        }, {} as Record<string, Map<number, any>>);
+
+        const workbook = new ExcelJS.Workbook();
+        workbook.creator = 'Pine Hill Score';
+        const sheet = workbook.addWorksheet('Horários de Saída');
+
+        sheet.mergeCells('A1:D1');
+        const titleCell = sheet.getCell('A1');
+        titleCell.value = tournament.name.toUpperCase();
+        titleCell.font = { name: 'Calibri', size: 16, bold: true };
+        titleCell.alignment = { vertical: 'middle', horizontal: 'center' };
+        
+        let currentRow = 3;
+
+        for (const hole in groupsByHole) {
+            const groups = Array.from(groupsByHole[hole].values());
+            
+            sheet.mergeCells(`A${currentRow}:D${currentRow}`);
+            const teeTitleCell = sheet.getCell(`A${currentRow}`);
+            teeTitleCell.value = `HORÁRIO DE SAÍDA - TEE ${hole}`;
+            teeTitleCell.font = { name: 'Calibri', size: 12, bold: true, color: { argb: 'FFFFFFFF' } };
+            teeTitleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F81BD' } };
+            teeTitleCell.alignment = { vertical: 'middle', horizontal: 'center' };
+            currentRow++;
+            
+            const headerRow = sheet.addRow(['HORA', 'MATCH', 'JOGADORES', 'CÓDIGO']);
+            headerRow.font = { bold: true };
+            headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
+            currentRow++;
+
+            let matchNumber = 1;
+            let teeTime = new Date(`${tournament.date.toISOString().split('T')[0]}T${tournament.startTime || '08:00:00'}`);
+
+            groups.forEach(group => {
+                const formattedTime = teeTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+                const startRow = currentRow;
+                group.players.forEach((playerName: string, index: number) => {
+                    if (index === 0) {
+                        sheet.addRow([formattedTime, matchNumber, playerName, group.accessCode]);
+                    } else {
+                        sheet.addRow(['', '', playerName, '']);
+                    }
+                });
+                const endRow = currentRow + group.players.length - 1;
+
+                if (group.players.length > 1) {
+                    sheet.mergeCells(`A${startRow}:A${endRow}`);
+                    sheet.mergeCells(`B${startRow}:B${endRow}`);
+                    sheet.mergeCells(`D${startRow}:D${endRow}`);
+                }
+                
+                sheet.getCell(`A${startRow}`).alignment = { vertical: 'middle', horizontal: 'center' };
+                sheet.getCell(`B${startRow}`).alignment = { vertical: 'middle', horizontal: 'center' };
+                sheet.getCell(`D${startRow}`).alignment = { vertical: 'middle', horizontal: 'center' };
+
+                currentRow = endRow + 1;
+                matchNumber++;
+                teeTime.setMinutes(teeTime.getMinutes() + TEE_TIME_INTERVAL);
+            });
+            currentRow++;
+        }
+
+        sheet.columns.forEach(column => {
+            if (column.key === 'players') column.width = 40;
+            else if (column.key === 'code') column.width = 15;
+            else column.width = 12;
+        });
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', 'attachment; filename=' + 'Horarios_de_Saida.xlsx');
+        await workbook.xlsx.write(res);
+        res.end();
+
+    } catch (error) {
+        console.error('Erro ao exportar grupos:', error);
+        res.status(500).json({ error: 'Erro ao exportar grupos.' });
     }
 });
 
@@ -509,6 +636,7 @@ app.get('/api/history/player/:playerId/tournament/:tournamentId', async (req: Re
     }
 });
 
+// --- ROTA DE EXPORTAÇÃO EXCEL ---
 app.get('/api/tournaments/:tournamentId/export', async (req: Request, res: Response) => {
     try {
         const { tournamentId } = req.params;
@@ -528,6 +656,7 @@ app.get('/api/tournaments/:tournamentId/export', async (req: Request, res: Respo
         `, [tournamentId]);
 
         if (players.length === 0) {
+            await connection.end();
             return res.status(404).send('Nenhum jogador encontrado para este torneio.');
         }
 
@@ -539,13 +668,15 @@ app.get('/api/tournaments/:tournamentId/export', async (req: Request, res: Respo
                     name: row.fullName,
                     gender: row.gender,
                     handicap: row.courseHandicap || 0,
-                    scores: new Map()
+                    scores: new Map(),
+                    tiebreakApplied: ''
                 });
             }
             if (row.holeNumber) {
                 playerData.get(row.id).scores.set(row.holeNumber, row.strokes);
             }
         }
+
         const processedPlayers = Array.from(playerData.values());
 
         for (const player of processedPlayers) {
@@ -556,6 +687,41 @@ app.get('/api/tournaments/:tournamentId/export', async (req: Request, res: Respo
             player.net = player.gross - player.handicap;
         }
 
+        const calculateTiebreakScore = (player: any, holes: number[], hcpFraction: number): number => {
+            const gross = holes.reduce((sum, holeNum) => sum + (player.scores.get(holeNum) || 0), 0);
+            return gross - (player.handicap * hcpFraction);
+        };
+
+        const tiebreakCriteria = [
+            { holes: [10, 11, 12, 13, 14, 15, 16, 17, 18], hcpFraction: 1/2, description: 'Desempate: Últimos 9' },
+            { holes: [13, 14, 15, 16, 17, 18], hcpFraction: 1/3, description: 'Desempate: Últimos 6' },
+            { holes: [16, 17, 18], hcpFraction: 1/6, description: 'Desempate: Últimos 3' },
+            { holes: [18], hcpFraction: 1/18, description: 'Desempate: Último Buraco' },
+            { holes: [1, 2, 3, 4, 5, 6, 7, 8, 9], hcpFraction: 1/2, description: 'Desempate: Primeiros 9' },
+            { holes: [4, 5, 6, 7, 8, 9], hcpFraction: 1/3, description: 'Desempate: Primeiros 6' },
+            { holes: [7, 8, 9], hcpFraction: 1/6, description: 'Desempate: Primeiros 3' },
+            { holes: [9], hcpFraction: 1/18, description: 'Desempate: Buraco 9' },
+        ];
+
+        const comparePlayers = (a: any, b: any) => {
+            if (a.net !== b.net) {
+                return a.net - b.net;
+            }
+            for (const criterion of tiebreakCriteria) {
+                const scoreA = calculateTiebreakScore(a, criterion.holes, criterion.hcpFraction);
+                const scoreB = calculateTiebreakScore(b, criterion.holes, criterion.hcpFraction);
+                if (Math.abs(scoreA - scoreB) > 0.001) { 
+                    if (a.tiebreakApplied === '') a.tiebreakApplied = criterion.description;
+                    if (b.tiebreakApplied === '') b.tiebreakApplied = criterion.description;
+                    return scoreA - scoreB;
+                }
+            }
+            return 0; 
+        };
+        
+        const netSortedPlayers = [...processedPlayers].sort(comparePlayers);
+        const grossSortedPlayers = [...processedPlayers].sort((a, b) => a.gross - b.gross);
+
         const categories = {
             M1: { name: 'Categoria M1 (0 a 8.5)', gender: 'Male', min: 0, max: 8.5, players: [] as any[] },
             M2: { name: 'Categoria M2 (8.6 a 14)', gender: 'Male', min: 8.6, max: 14.0, players: [] as any[] },
@@ -565,7 +731,7 @@ app.get('/api/tournaments/:tournamentId/export', async (req: Request, res: Respo
             F2: { name: 'Categoria F2 (16.1 a 23.7)', gender: 'Female', min: 16.1, max: 23.7, players: [] as any[] },
             F3: { name: 'Categoria F3 (23.8 a 36.4)', gender: 'Female', min: 23.8, max: 36.4, players: [] as any[] },
         };
-
+        
         for (const player of processedPlayers) {
             for (const catKey in categories) {
                 const cat = categories[catKey as keyof typeof categories];
@@ -575,76 +741,163 @@ app.get('/api/tournaments/:tournamentId/export', async (req: Request, res: Respo
                 }
             }
         }
+
+        for (const catKey in categories) {
+            categories[catKey as keyof typeof categories].players.sort(comparePlayers);
+        }
         
         await connection.end();
 
         const workbook = new ExcelJS.Workbook();
         workbook.creator = 'Pine Hill Score';
-        workbook.created = new Date();
 
-        const leaderboardSheet = workbook.addWorksheet('Leaderboard Geral');
-        leaderboardSheet.columns = [
-            { header: 'Pos.', key: 'pos', width: 5 },
-            { header: 'Nome', key: 'name', width: 30 },
-            { header: 'HDC', key: 'handicap', width: 10 },
-            { header: 'GROSS', key: 'gross', width: 10 },
-            { header: 'NET', key: 'net', width: 10 },
-        ];
-        leaderboardSheet.addRow({ name: 'CLASSIFICAÇÃO MASCULINA' }).font = { bold: true, size: 14 };
-        processedPlayers.filter(p => p.gender === 'Male').sort((a,b) => a.net - b.net).forEach((p, i) => {
-            leaderboardSheet.addRow({ pos: i + 1, name: p.name, handicap: p.handicap, gross: p.gross, net: p.net });
-        });
-        leaderboardSheet.addRow({});
-        leaderboardSheet.addRow({ name: 'CLASSIFICAÇÃO FEMININA' }).font = { bold: true, size: 14 };
-        processedPlayers.filter(p => p.gender === 'Female').sort((a,b) => a.net - b.net).forEach((p, i) => {
-            leaderboardSheet.addRow({ pos: i + 1, name: p.name, handicap: p.handicap, gross: p.gross, net: p.net });
-        });
+        const addDetailedSheet = (sheetName: string, players: any[], includeTiebreakCol: boolean) => {
+            const sheet = workbook.addWorksheet(sheetName);
+            const columns: Partial<ExcelJS.Column>[] = [
+                { header: 'Pos.', key: 'pos', width: 5 },
+                { header: 'Nome', key: 'name', width: 30 },
+                { header: 'HDC', key: 'handicap', width: 8 },
+            ];
+            for (let i = 1; i <= 9; i++) columns.push({ header: `B${i}`, key: `h${i}`, width: 5 });
+            columns.push({ header: '1ª Volta', key: 'ida', width: 8 });
+            for (let i = 10; i <= 18; i++) columns.push({ header: `B${i}`, key: `h${i}`, width: 5 });
+            columns.push({ header: '2ª Volta', key: 'volta', width: 8 });
+            columns.push({ header: 'GROSS', key: 'gross', width: 8 });
+            columns.push({ header: 'NET', key: 'net', width: 8 });
+            
+            if (includeTiebreakCol) {
+                 columns.push({ header: 'Desempate Aplicado', key: 'tiebreak', width: 20 });
+            }
+            sheet.columns = columns;
+
+            players.forEach((p, i) => {
+                const rowData: any = { pos: i + 1, name: p.name, handicap: p.handicap };
+                let ida = 0, volta = 0;
+                for (let h = 1; h <= 18; h++) {
+                    const score = p.scores.get(h) || 0;
+                    rowData[`h${h}`] = score;
+                    if (h <= 9) ida += score;
+                    else volta += score;
+                }
+                rowData.ida = ida;
+                rowData.volta = volta;
+                rowData.gross = p.gross;
+                rowData.net = p.net;
+                if (includeTiebreakCol) {
+                    rowData.tiebreak = p.tiebreakApplied;
+                }
+                sheet.addRow(rowData);
+            });
+        };
+
+        addDetailedSheet('Leaderboard Geral (NET)', netSortedPlayers, true);
 
         const grossSheet = workbook.addWorksheet('Campeões Gross');
+        grossSheet.columns = [
+             { header: 'Pos.', key: 'pos', width: 5 },
+             { header: 'Nome', key: 'name', width: 30 },
+             { header: 'GROSS', key: 'gross', width: 10 },
+        ];
+        grossSortedPlayers.forEach((p, i) => {
+            grossSheet.addRow({ pos: i + 1, name: p.name, gross: p.gross });
+        });
 
         for (const catKey in categories) {
             const cat = categories[catKey as keyof typeof categories];
             if (cat.players.length > 0) {
-                const catSheet = workbook.addWorksheet(catKey);
-                const columns = [
-                    { header: 'Pos.', key: 'pos', width: 5 },
-                    { header: 'Nome', key: 'name', width: 30 },
-                    { header: 'HDC', key: 'handicap', width: 8 },
-                ];
-                for(let i = 1; i <= 9; i++) columns.push({ header: `B${i}`, key: `h${i}`, width: 5 });
-                columns.push({ header: '1ª Volta', key: 'ida', width: 8 });
-                for(let i = 10; i <= 18; i++) columns.push({ header: `B${i}`, key: `h${i}`, width: 5 });
-                columns.push({ header: '2ª Volta', key: 'volta', width: 8 });
-                columns.push({ header: 'GROSS', key: 'gross', width: 8 });
-                columns.push({ header: 'NET', key: 'net', width: 8 });
-                catSheet.columns = columns;
-
-                cat.players.sort((a,b) => a.net - b.net).forEach((p, i) => {
-                    const rowData: any = { pos: i + 1, name: p.name, handicap: p.handicap };
-                    let ida = 0, volta = 0;
-                    for (let h = 1; h <= 18; h++) {
-                        const score = p.scores.get(h) || 0;
-                        rowData[`h${h}`] = score;
-                        if (h <= 9) ida += score;
-                        else volta += score;
-                    }
-                    rowData.ida = ida;
-                    rowData.volta = volta;
-                    rowData.gross = p.gross;
-                    rowData.net = p.net;
-                    catSheet.addRow(rowData);
-                });
+                addDetailedSheet(catKey, cat.players, true);
             }
         }
         
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Disposition', 'attachment; filename=' + 'Relatorio_Torneio.xlsx');
+        res.setHeader('Content-Disposition', 'attachment; filename=' + 'Relatorio_Torneio_Detalhado.xlsx');
         await workbook.xlsx.write(res);
         res.end();
 
     } catch (error) {
         console.error('Erro ao exportar relatório:', error);
         res.status(500).json({ error: 'Erro ao exportar relatório.' });
+    }
+});
+
+// --- NOVA ROTA PARA ESTATÍSTICAS DO JOGADOR ---
+app.get('/api/players/:playerId/stats', async (req: Request, res: Response) => {
+    try {
+        const { playerId } = req.params;
+        const connection = await mysql.createConnection(dbConfig);
+
+        const query = `
+            SELECT
+                COUNT(DISTINCT t.id) as totalRounds,
+                AVG(s.strokes) as averageStrokes,
+                MIN(player_round_scores.gross) as bestGross,
+                MIN(player_round_scores.gross - gp.courseHandicap) as bestNet,
+                
+                SUM(CASE WHEN s.strokes <= h.par - 2 THEN 1 ELSE 0 END) as eaglesOrBetter,
+                SUM(CASE WHEN s.strokes = h.par - 1 THEN 1 ELSE 0 END) as birdies,
+                SUM(CASE WHEN s.strokes = h.par THEN 1 ELSE 0 END) as pars,
+                SUM(CASE WHEN s.strokes = h.par + 1 THEN 1 ELSE 0 END) as bogeys,
+                SUM(CASE WHEN s.strokes >= h.par + 2 THEN 1 ELSE 0 END) as doubleBogeysOrWorse,
+
+                AVG(CASE WHEN h.par = 3 THEN s.strokes ELSE NULL END) as averagePar3,
+                AVG(CASE WHEN h.par = 4 THEN s.strokes ELSE NULL END) as averagePar4,
+                AVG(CASE WHEN h.par = 5 THEN s.strokes ELSE NULL END) as averagePar5
+            FROM players p
+            JOIN group_players gp ON p.id = gp.playerId
+            JOIN \`groups\` g ON gp.groupId = g.id
+            JOIN tournaments t ON g.tournamentId = t.id
+            JOIN scores s ON gp.playerId = s.playerId AND gp.groupId = s.groupId
+            JOIN courses c ON t.courseId = c.id
+            JOIN holes h ON c.id = h.courseId AND s.holeNumber = h.holeNumber
+            LEFT JOIN (
+                SELECT 
+                    s_inner.playerId, 
+                    g_inner.tournamentId, 
+                    SUM(s_inner.strokes) as gross
+                FROM scores s_inner
+                JOIN \`groups\` g_inner ON s_inner.groupId = g_inner.id
+                GROUP BY s_inner.playerId, g_inner.tournamentId
+            ) as player_round_scores ON s.playerId = player_round_scores.playerId AND t.id = player_round_scores.tournamentId
+            WHERE 
+                p.id = ? AND t.status = 'completed'
+            GROUP BY
+                p.id;
+        `;
+
+        const [rows]: any[] = await connection.execute(query, [playerId]);
+        await connection.end();
+
+        if (rows.length > 0) {
+            const stats = rows[0];
+            // Converte valores para números e formata, tratando nulos
+            for (const key in stats) {
+                if (stats[key] === null) {
+                    stats[key] = 0;
+                } else if (typeof stats[key] === 'string') {
+                    stats[key] = parseFloat(parseFloat(stats[key]).toFixed(2));
+                }
+            }
+            res.json(stats);
+        } else {
+            // Retorna um objeto zerado se o jogador não tiver estatísticas
+            res.json({
+                totalRounds: 0,
+                averageStrokes: 0,
+                bestGross: 0,
+                bestNet: 0,
+                eaglesOrBetter: 0,
+                birdies: 0,
+                pars: 0,
+                bogeys: 0,
+                doubleBogeysOrWorse: 0,
+                averagePar3: 0,
+                averagePar4: 0,
+                averagePar5: 0,
+            });
+        }
+    } catch (error) {
+        console.error('Erro ao buscar estatísticas do jogador:', error);
+        res.status(500).json({ error: 'Erro ao buscar estatísticas.' });
     }
 });
 

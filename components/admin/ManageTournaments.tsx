@@ -1,4 +1,4 @@
-// components/admin/ManageTournaments.tsx - VERSÃO COM BOTÃO DE FINALIZAR
+// components/admin/ManageTournaments.tsx - VERSÃO COM CAMPO DE HORÁRIO
 
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
@@ -14,6 +14,7 @@ const ManageTournaments: React.FC<ManageTournamentsProps> = ({ courses }) => {
   const [loading, setLoading] = useState(true);
   const [newTournamentName, setNewTournamentName] = useState('');
   const [newTournamentDate, setNewTournamentDate] = useState('');
+  const [newTournamentTime, setNewTournamentTime] = useState('08:30'); // NOVO ESTADO PARA O HORÁRIO
   const [selectedCourseId, setSelectedCourseId] = useState('');
 
   const fetchTournaments = async () => {
@@ -33,16 +34,18 @@ const ManageTournaments: React.FC<ManageTournamentsProps> = ({ courses }) => {
 
   const handleCreateTournament = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (newTournamentName.trim() && newTournamentDate && selectedCourseId) {
+    if (newTournamentName.trim() && newTournamentDate && selectedCourseId && newTournamentTime) {
       const newTournamentData = {
         name: newTournamentName,
         date: newTournamentDate,
         courseId: parseInt(selectedCourseId, 10),
+        startTime: newTournamentTime, // Envia o horário para a API
       };
       try {
         await axios.post('http://localhost:3001/api/tournaments', newTournamentData);
         setNewTournamentName('');
         setNewTournamentDate('');
+        setNewTournamentTime('08:30');
         setSelectedCourseId('');
         fetchTournaments();
       } catch (error) {
@@ -52,12 +55,11 @@ const ManageTournaments: React.FC<ManageTournamentsProps> = ({ courses }) => {
     }
   };
   
-  // NOVA FUNÇÃO para finalizar um torneio
   const handleFinishTournament = async (tournamentId: number) => {
     if(window.confirm('Tem a certeza de que quer finalizar este torneio? Esta ação não pode ser desfeita.')) {
         try {
             await axios.post(`http://localhost:3001/api/tournaments/${tournamentId}/finish`);
-            fetchTournaments(); // Recarrega a lista para mostrar o novo status
+            fetchTournaments(); 
         } catch (error) {
             alert('Não foi possível finalizar o torneio.');
         }
@@ -80,16 +82,21 @@ const ManageTournaments: React.FC<ManageTournamentsProps> = ({ courses }) => {
     <div className="space-y-8">
       <div className="p-6 bg-gray-700/50 rounded-lg">
         <h3 className="text-xl font-bold text-green-400 mb-4">Criar Novo Torneio</h3>
-        <form onSubmit={handleCreateTournament} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 items-end">
-          <div>
+        <form onSubmit={handleCreateTournament} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
+          <div className="lg:col-span-1">
             <label htmlFor="tournamentName" className="block text-sm font-medium text-gray-300 mb-1">Nome</label>
             <input id="tournamentName" type="text" value={newTournamentName} onChange={(e) => setNewTournamentName(e.target.value)} required className="w-full px-3 py-2 border border-gray-600 bg-gray-900 text-white rounded-md"/>
           </div>
-          <div>
+          <div className="lg:col-span-1">
             <label htmlFor="tournamentDate" className="block text-sm font-medium text-gray-300 mb-1">Data</label>
             <input id="tournamentDate" type="date" value={newTournamentDate} onChange={(e) => setNewTournamentDate(e.target.value)} required className="w-full px-3 py-2 border border-gray-600 bg-gray-900 text-white rounded-md"/>
           </div>
-          <div>
+          {/* NOVO CAMPO DE HORÁRIO */}
+          <div className="lg:col-span-1">
+            <label htmlFor="tournamentTime" className="block text-sm font-medium text-gray-300 mb-1">Hora Início</label>
+            <input id="tournamentTime" type="time" value={newTournamentTime} onChange={(e) => setNewTournamentTime(e.target.value)} required className="w-full px-3 py-2 border border-gray-600 bg-gray-900 text-white rounded-md"/>
+          </div>
+          <div className="lg:col-span-1">
             <label htmlFor="tournamentCourse" className="block text-sm font-medium text-gray-300 mb-1">Campo</label>
             <select id="tournamentCourse" value={selectedCourseId} onChange={(e) => setSelectedCourseId(e.target.value)} required className="w-full px-3 py-2 border border-gray-600 bg-gray-900 text-white rounded-md">
               <option value="">-- Selecione --</option>
