@@ -1,4 +1,4 @@
-// screens/ScorecardScreen.tsx - VERSÃO COMPLETA E CORRIGIDA
+// screens/ScorecardScreen.tsx - ATUALIZADO
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
@@ -56,7 +56,7 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode, onBack, i
     const fetchScorecardData = useCallback(async () => { 
         try {
             setLoading(true);
-            const response = await axios.get<ScorecardData>(`http://localhost:3001/api/scorecard/${accessCode}`);
+            const response = await axios.get<ScorecardData>(`${import.meta.env.VITE_API_URL}/api/scorecard/${accessCode}`);
             const groupData = response.data;
             setData(groupData);
             setCurrentHole(groupData.startHole);
@@ -121,7 +121,7 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode, onBack, i
             strokes: localScores[player.id][currentHole]
         }));
         try {
-            await axios.post('http://localhost:3001/api/scores/hole', {
+            await axios.post(`${import.meta.env.VITE_API_URL}/api/scores/hole`, {
                 groupId: data.groupId,
                 holeNumber: currentHole,
                 scores: scoresToSubmit
@@ -151,7 +151,7 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode, onBack, i
                             playerId: player.id,
                             strokes: localScores[player.id][i]
                         }));
-                        await axios.post('http://localhost:3001/api/scores/hole', {
+                        await axios.post(`${import.meta.env.VITE_API_URL}/api/scores/hole`, {
                             groupId: data.groupId,
                             holeNumber: i,
                             scores: scoresToSubmit
@@ -159,7 +159,7 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode, onBack, i
                     }
                 }
                 if (!isEditing) {
-                    await axios.post('http://localhost:3001/api/groups/finish', { groupId: data.groupId });
+                    await axios.post(`${import.meta.env.VITE_API_URL}/api/groups/finish`, { groupId: data.groupId });
                 }
                 onBack();
             } catch (error) {
@@ -233,7 +233,7 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode, onBack, i
                     className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50"
                     onClick={() => setModalImageUrl(null)}
                 >
-                    <img src={`http://localhost:3001${modalImageUrl}`} alt={`Visão aérea do buraco ${currentHoleInfo?.holeNumber}`} className="max-w-[90%] max-h-[90%] object-contain rounded-lg"/>
+                    <img src={`${import.meta.env.VITE_API_URL}${modalImageUrl}`} alt={`Visão aérea do buraco ${currentHoleInfo?.holeNumber}`} className="max-w-[90%] max-h-[90%] object-contain rounded-lg"/>
                 </div>
             )}
             <div className="bg-gray-800 p-4 rounded-lg shadow-xl flex flex-col h-[calc(100vh-10rem)]">
@@ -261,7 +261,6 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode, onBack, i
                                 </button>
                             )}
                         </div>
-                        {/* JARDAS RESTAURADAS */}
                         <div className="hidden sm:flex justify-center gap-x-3 items-center mt-1">
                             {currentHoleInfo?.tees.map(tee => (
                                 <div key={tee.id} className="flex items-center gap-x-1">

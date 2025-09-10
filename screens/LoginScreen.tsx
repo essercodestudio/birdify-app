@@ -25,7 +25,7 @@ const LoginScreen: React.FC = () => {
     setIsLoading(true);
     setError(null);
     try {
-      const response = await axios.post('http://localhost:3001/api/login', { email, password });
+      const response = await axios.post(`${import.meta.env.VITE_API_URL}/api/login`, { email, password });
       const loggedInUser: User = response.data.user;
       login(loggedInUser);
     } catch (err: any) {
@@ -49,8 +49,8 @@ const LoginScreen: React.FC = () => {
     setError(null);
     const newPlayerData = { fullName, cpf, email, password, gender };
     try {
-      await axios.post('http://localhost:3001/api/players', newPlayerData);
-      const response = await axios.post('http://localhost:3001/api/login', { email, password });
+      await axios.post(`${import.meta.env.VITE_API_URL}/api/players`, newPlayerData);
+      const response = await axios.post(`${import.meta.env.VITE_API_URL}/api/login`, { email, password });
       const loggedInUser: User = response.data.user;
       login(loggedInUser);
     } catch (err: any) {
@@ -77,7 +77,6 @@ const LoginScreen: React.FC = () => {
         <div className="text-center">
             <GolfPinIcon className="mx-auto h-12 w-12 text-green-400" />
             <h2 className="mt-6 text-3xl font-extrabold text-white">
-                {/* NOME ALTERADO AQUI */}
                 {isRegistering ? 'Crie a sua Conta' : 'Acesse o Birdify'}
             </h2>
         </div>

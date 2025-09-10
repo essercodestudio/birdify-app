@@ -1,8 +1,8 @@
-// screens/LeaderboardScreen.tsx - VERSÃO COM BOTÃO DE EXPORTAR
+// screens/LeaderboardScreen.tsx - ATUALIZADO
 
 import React, { useState, useEffect, useMemo, useCallback, useContext } from 'react';
 import axios from 'axios';
-import { AuthContext } from '../context/AuthContext'; // Importa o AuthContext
+import { AuthContext } from '../context/AuthContext';
 import Spinner from '../components/Spinner';
 import Button from '../components/Button';
 import ChevronLeftIcon from '../components/icons/ChevronLeftIcon';
@@ -14,13 +14,14 @@ interface LeaderboardScreenProps {
 }
 type ViewMode = 'Gross' | 'Net';
 type Category = 'Male' | 'Female';
-const formatToPar = (score: number) => { /* ...código sem alterações... */ 
+
+const formatToPar = (score: number) => { 
     if (score === 0) return 'E';
     return score > 0 ? `+${score}` : `${score}`;
 };
 
 const LeaderboardScreen: React.FC<LeaderboardScreenProps> = ({ tournamentId, onBack }) => {
-  const { user } = useContext(AuthContext); // Pega o utilizador logado
+  const { user } = useContext(AuthContext); 
   const [players, setPlayers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -28,9 +29,9 @@ const LeaderboardScreen: React.FC<LeaderboardScreenProps> = ({ tournamentId, onB
   const [category, setCategory] = useState<Category>('Male');
   const [selectedPlayer, setSelectedPlayer] = useState<any | null>(null);
 
-  const fetchLeaderboard = useCallback(async () => { /* ...código sem alterações... */ 
+  const fetchLeaderboard = useCallback(async () => { 
     try {
-        const response = await axios.get(`http://localhost:3001/api/leaderboard/${tournamentId}`); 
+        const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/leaderboard/${tournamentId}`); 
         setPlayers(response.data);
       } catch (err) {
         setError("Não foi possível carregar o leaderboard.");
@@ -48,16 +49,15 @@ const LeaderboardScreen: React.FC<LeaderboardScreenProps> = ({ tournamentId, onB
     return () => clearInterval(intervalId);
   }, [fetchLeaderboard]);
   
-  // NOVA FUNÇÃO PARA DESCARREGAR O RELATÓRIO
   const handleExport = async () => {
     try {
-        const response = await axios.get(`http://localhost:3001/api/tournaments/${tournamentId}/export`, {
-            responseType: 'blob', // Importante: espera um ficheiro como resposta
+        const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/tournaments/${tournamentId}/export`, {
+            responseType: 'blob',
         });
         const url = window.URL.createObjectURL(new Blob([response.data]));
         const link = document.createElement('a');
         link.href = url;
-        link.setAttribute('download', 'Relatorio_Torneio.xlsx'); // Nome do ficheiro
+        link.setAttribute('download', 'Relatorio_Torneio.xlsx');
         document.body.appendChild(link);
         link.click();
         link.remove();
@@ -67,13 +67,13 @@ const LeaderboardScreen: React.FC<LeaderboardScreenProps> = ({ tournamentId, onB
     }
   };
 
-  const sortedData = useMemo(() => { /* ...código sem alterações... */ 
+  const sortedData = useMemo(() => { 
     return players.filter(p => p.gender === category);
   }, [players, category]);
 
   if (loading) return <Spinner />;
   if (error) return <p className="text-red-400 text-center">{error}</p>;
-  if (selectedPlayer) { /* ...código sem alterações... */ 
+  if (selectedPlayer) { 
     return <PlayerDetailScreen player={selectedPlayer} tournamentId={tournamentId} onBack={() => setSelectedPlayer(null)} />
   }
 
@@ -86,7 +86,6 @@ const LeaderboardScreen: React.FC<LeaderboardScreenProps> = ({ tournamentId, onB
             </Button>
             <h1 className="text-3xl font-bold text-white">Leaderboard ao Vivo</h1>
         </div>
-        {/* SÓ MOSTRA O BOTÃO DE EXPORTAR SE O UTILIZADOR FOR ADMIN */}
         {user?.role === 'admin' && (
             <Button onClick={handleExport}>
                 Exportar Relatório Detalhado

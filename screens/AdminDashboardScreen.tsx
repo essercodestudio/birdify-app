@@ -1,14 +1,13 @@
-// screens/AdminDashboardScreen.tsx - VERSÃO FINAL COMPLETA
+// screens/AdminDashboardScreen.tsx - ATUALIZADO
 
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import ManageCourses from '../components/admin/ManageCourses';
 import ManageTournaments from '../components/admin/ManageTournaments';
-import ManageGroups from '../components/admin/ManageGroups'; // Importamos o ManageGroups
+import ManageGroups from '../components/admin/ManageGroups';
 import Button from '../components/Button';
 import ChevronLeftIcon from '../components/icons/ChevronLeftIcon';
 import { AdminCourse } from '../data/mockDatabase';
-import { db } from '../data/mockDatabase';
 
 interface AdminDashboardScreenProps {
   onBack: () => void;
@@ -24,7 +23,7 @@ const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({ onBack }) =
   useEffect(() => {
     const fetchCoursesForPanel = async () => {
       try {
-        const response = await axios.get('http://localhost:3001/api/courses');
+        const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/courses`);
         setCourses(response.data);
       } catch (error) {
         console.error("Erro ao buscar campos para o painel:", error);
@@ -68,10 +67,7 @@ const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({ onBack }) =
 
       <div>
         {activeTab === 'courses' && (
-          <ManageCourses
-            holes={db.holes} 
-            tees={db.tees}
-          />
+          <ManageCourses />
         )}
         {activeTab === 'tournaments' && (
           loadingCourses ? <p>A carregar campos...</p> :
@@ -80,7 +76,7 @@ const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({ onBack }) =
             />
         )}
         {activeTab === 'groups' && (
-            <ManageGroups /> // Renderizamos o componente de grupos
+            <ManageGroups />
         )}
       </div>
     </div>

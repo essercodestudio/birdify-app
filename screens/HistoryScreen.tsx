@@ -1,4 +1,4 @@
-// screens/HistoryScreen.tsx - VERSÃO CORRIGIDA E FINAL
+// screens/HistoryScreen.tsx - ATUALIZADO
 
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
@@ -6,7 +6,7 @@ import Spinner from '../components/Spinner';
 import Button from '../components/Button';
 import ChevronLeftIcon from '../components/icons/ChevronLeftIcon';
 import { User } from '../types';
-import LeaderboardScreen from './LeaderboardScreen'; // Importamos o LeaderboardScreen
+import LeaderboardScreen from './LeaderboardScreen'; 
 
 interface HistoryScreenProps {
   user: User;
@@ -28,7 +28,7 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ user, onBack }) => {
     useEffect(() => {
         const fetchHistory = async () => {
             try {
-                const response = await axios.get(`http://localhost:3001/api/history/player/${user.id}`);
+                const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/history/player/${user.id}`);
                 setHistory(response.data);
             } catch (error) {
                 console.error("Erro ao buscar histórico", error);
@@ -41,13 +41,10 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ user, onBack }) => {
 
     if (loading) return <Spinner />;
     
-    // Se um torneio for selecionado, mostra o Leaderboard final dele
     if (selectedTournamentId) {
-        // Passamos 'onBack' para a função que limpa a seleção, voltando à lista
         return <LeaderboardScreen tournamentId={selectedTournamentId} onBack={() => setSelectedTournamentId(null)} />;
     }
 
-    // Caso contrário, mostra a lista de torneios finalizados que o jogador participou
     return (
         <div className="bg-gray-800 p-4 sm:p-6 rounded-lg shadow-xl">
             <div className="flex items-center mb-6">

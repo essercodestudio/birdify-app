@@ -1,4 +1,4 @@
-// screens/PlayerDetailScreen.tsx - VERSÃO COM COMPARAÇÃO HEAD-TO-HEAD
+// screens/PlayerDetailScreen.tsx - VERSÃO COM A URL DA API CORRIGIDA
 
 import React, { useState, useEffect } from "react";
 import axios from "axios";
@@ -60,9 +60,9 @@ const PlayerDetailScreen: React.FC<PlayerDetailProps> = ({
         // Busca os detalhes do jogador principal e a lista de todos os jogadores do torneio em paralelo
         const [detailsRes, playersRes] = await Promise.all([
           axios.get(
-            `http://localhost:3001/api/history/player/${player.id}/tournament/${tournamentId}`
+            `${import.meta.env.VITE_API_URL}/api/history/player/${player.id}/tournament/${tournamentId}`
           ),
-          axios.get(`http://localhost:3001/api/leaderboard/${tournamentId}`),
+          axios.get(`${import.meta.env.VITE_API_URL}/api/leaderboard/${tournamentId}`),
         ]);
         setDetails(detailsRes.data);
         // Filtra o próprio jogador da lista de comparação
@@ -88,7 +88,7 @@ const PlayerDetailScreen: React.FC<PlayerDetailProps> = ({
       try {
         setIsComparisonLoading(true);
         const response = await axios.get(
-          `http://localhost:3001/api/history/player/${comparedPlayerId}/tournament/${tournamentId}`
+          `${import.meta.env.VITE_API_URL}/api/history/player/${comparedPlayerId}/tournament/${tournamentId}`
         );
         setComparedPlayerDetails(response.data);
       } catch (error) {

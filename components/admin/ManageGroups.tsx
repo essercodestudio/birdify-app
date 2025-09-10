@@ -1,4 +1,4 @@
-// components/admin/ManageGroups.tsx - VERSÃO COM BOTÃO DE EXPORTAR GRUPOS
+// components/admin/ManageGroups.tsx - ATUALIZADO
 
 import React, { useState, useEffect, useMemo } from "react";
 import axios from "axios";
@@ -33,7 +33,7 @@ const ManageGroups: React.FC = () => {
     const fetchTournaments = async () => {
       try {
         const tournamentsRes = await axios.get(
-          "http://localhost:3001/api/tournaments"
+          `${import.meta.env.VITE_API_URL}/api/tournaments`
         );
         setTournaments(tournamentsRes.data);
       } catch (error) {
@@ -50,13 +50,13 @@ const ManageGroups: React.FC = () => {
       try {
         const [playersRes, groupsRes, teesRes] = await Promise.all([
           axios.get(
-            `http://localhost:3001/api/players?tournamentId=${tournamentId}`
+            `${import.meta.env.VITE_API_URL}/api/players?tournamentId=${tournamentId}`
           ),
           axios.get(
-            `http://localhost:3001/api/tournaments/${tournamentId}/groups`
+            `${import.meta.env.VITE_API_URL}/api/tournaments/${tournamentId}/groups`
           ),
           axios.get(
-            `http://localhost:3001/api/tournaments/${tournamentId}/tees`
+            `${import.meta.env.VITE_API_URL}/api/tournaments/${tournamentId}/tees`
           ),
         ]);
         setAvailablePlayers(playersRes.data);
@@ -76,11 +76,10 @@ const ManageGroups: React.FC = () => {
     fetchTournamentData(selectedTournamentId);
   }, [selectedTournamentId]);
   
-  // NOVA FUNÇÃO PARA EXPORTAR GRUPOS
   const handleExportGroups = async () => {
       if (!selectedTournamentId) return;
       try {
-          const response = await axios.get(`http://localhost:3001/api/tournaments/${selectedTournamentId}/export-groups`, {
+          const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/tournaments/${selectedTournamentId}/export-groups`, {
               responseType: 'blob',
           });
           const url = window.URL.createObjectURL(new Blob([response.data]));
@@ -163,14 +162,14 @@ const ManageGroups: React.FC = () => {
     };
     try {
       const response = await axios.post(
-        "http://localhost:3001/api/groups",
+        `${import.meta.env.VITE_API_URL}/api/groups`,
         groupData
       );
       setGeneratedCode(response.data.accessCode);
       fetchTournamentData(selectedTournamentId);
       setSelectedPlayers({});
       setResponsiblePlayerId(null);
-      setSearchTerm(''); // Limpa a pesquisa após criar o grupo
+      setSearchTerm('');
     } catch (error) {
       alert("Falha ao criar o grupo.");
       console.error(error);
@@ -180,7 +179,7 @@ const ManageGroups: React.FC = () => {
   const handleDeleteGroup = async (groupId: number) => {
     if (window.confirm("Tem a certeza de que quer apagar este grupo?")) {
       try {
-        await axios.delete(`http://localhost:3001/api/groups/${groupId}`);
+        await axios.delete(`${import.meta.env.VITE_API_URL}/api/groups/${groupId}`);
         fetchTournamentData(selectedTournamentId);
       } catch (error) {
         alert("Não foi possível apagar o grupo.");
@@ -219,7 +218,6 @@ const ManageGroups: React.FC = () => {
                 ))}
                 </select>
             </div>
-            {/* NOVO BOTÃO DE EXPORTAÇÃO */}
             <div className="self-end">
                 <Button onClick={handleExportGroups} disabled={!selectedTournamentId}>
                     Exportar Grupos

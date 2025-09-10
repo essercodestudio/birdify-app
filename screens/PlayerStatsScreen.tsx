@@ -1,4 +1,4 @@
-// screens/PlayerStatsScreen.tsx - VERSÃO CORRIGIDA E ROBUSTA
+// screens/PlayerStatsScreen.tsx - ATUALIZADO
 
 import React, { useState, useEffect, useContext } from 'react';
 import axios from 'axios';
@@ -44,7 +44,7 @@ const PlayerStatsScreen: React.FC<PlayerStatsScreenProps> = ({ onBack }) => {
         const fetchStats = async () => {
             try {
                 setLoading(true);
-                const response = await axios.get(`http://localhost:3001/api/players/${user.id}/stats`);
+                const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/players/${user.id}/stats`);
                 setStats(response.data);
             } catch (error) {
                 console.error("Erro ao buscar estatísticas", error);
@@ -57,9 +57,7 @@ const PlayerStatsScreen: React.FC<PlayerStatsScreenProps> = ({ onBack }) => {
 
     if (loading) return <Spinner />;
 
-    // Função para formatar números com segurança
     const formatStat = (value: number | undefined | null) => {
-        // Se o valor for nulo, indefinido ou não for um número, retorna '0.00'
         if (typeof value !== 'number') {
             return '0.00';
         }
@@ -80,7 +78,6 @@ const PlayerStatsScreen: React.FC<PlayerStatsScreenProps> = ({ onBack }) => {
 
             {stats && stats.totalRounds > 0 ? (
                 <div className="space-y-6">
-                    {/* Resumo Geral */}
                     <div>
                         <h2 className="text-xl font-bold text-green-400 mb-3">Resumo Geral</h2>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -90,8 +87,6 @@ const PlayerStatsScreen: React.FC<PlayerStatsScreenProps> = ({ onBack }) => {
                             <StatCard title="Média de Tacadas" value={formatStat(stats.averageStrokes)} />
                         </div>
                     </div>
-
-                    {/* Distribuição de Scores */}
                     <div>
                         <h2 className="text-xl font-bold text-green-400 mb-3">Distribuição de Scores</h2>
                         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
@@ -102,8 +97,6 @@ const PlayerStatsScreen: React.FC<PlayerStatsScreenProps> = ({ onBack }) => {
                             <StatCard title="Double Bogey+" value={stats.doubleBogeysOrWorse} />
                         </div>
                     </div>
-
-                    {/* Desempenho por Par */}
                     <div>
                         <h2 className="text-xl font-bold text-green-400 mb-3">Desempenho por Tipo de Buraco</h2>
                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

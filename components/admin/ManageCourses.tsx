@@ -1,9 +1,15 @@
-// components/admin/ManageCourses.tsx - VERSÃO COM UPLOAD CORRIGIDO
+// components/admin/ManageCourses.tsx - ATUALIZADO
 
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { AdminCourse } from '../../data/mockDatabase';
 import Button from '../Button';
+
+interface AdminCourse {
+  id: string;
+  name: string;
+  location: string;
+  aerialImageUrl?: string;
+}
 
 const teeColors = ["Gold", "Blue", "White", "Red"];
 const teeColorStyles: { [key: string]: string } = {
@@ -35,7 +41,7 @@ const ManageCourses: React.FC = () => {
     const fetchCourses = async () => {
         setLoading(true);
         try {
-            const response = await axios.get('http://localhost:3001/api/courses');
+            const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/courses`);
             setCourses(response.data);
         } catch (err) {
             setError('Falha ao carregar os campos.');
@@ -78,17 +84,15 @@ const ManageCourses: React.FC = () => {
         }));
         formData.append('holes', JSON.stringify(holesPayload));
 
-        // CORREÇÃO: Adiciona os ficheiros com um nome de campo que o multer espera
         holesData.forEach(hole => {
             const file = holeImages[hole.holeNumber];
             if (file) {
-                // O nome do ficheiro é mudado para ser previsível no backend
                 formData.append('holeImages', file, `hole_${hole.holeNumber}`);
             }
         });
 
         try {
-            await axios.post('http://localhost:3001/api/courses', formData, {
+            await axios.post(`${import.meta.env.VITE_API_URL}/api/courses`, formData, {
                 headers: { 'Content-Type': 'multipart/form-data' }
             });
             
@@ -108,7 +112,7 @@ const ManageCourses: React.FC = () => {
     const handleDeleteCourse = async (courseId: number) => {
         if (window.confirm('Tem a certeza?')) {
             try {
-                await axios.delete(`http://localhost:3001/api/courses/${courseId}`);
+                await axios.delete(`${import.meta.env.VITE_API_URL}/api/courses/${courseId}`);
                 fetchCourses();
             } catch (error: any) {
                 alert(error.response?.data?.error || 'Não foi possível apagar o campo.');
@@ -182,7 +186,7 @@ const ManageCourses: React.FC = () => {
                             <tr key={course.id}>
                                 <td className="px-4 py-3">{course.name}</td>
                                 <td className="px-4 py-3 space-x-2">
-                                    <Button variant="danger" size="sm" onClick={() => handleDeleteCourse(course.id)}>Apagar</Button>
+                                    <Button variant="danger" size="sm" onClick={() => handleDeleteCourse(parseInt(course.id, 10))}>Apagar</Button>
                                 </td>
                             </tr>
                         ))}

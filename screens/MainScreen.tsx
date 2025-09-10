@@ -1,4 +1,4 @@
-// screens/MainScreen.tsx - VERSÃO COM BOTÃO DE ESTATÍSTICAS
+// screens/MainScreen.tsx - VERSÃO CORRETA E COMPLETA
 
 import React, { useState, useContext, useCallback } from "react";
 import axios from "axios";
@@ -8,11 +8,10 @@ import ScorecardScreen from "./ScorecardScreen";
 import AdminDashboardScreen from "./AdminDashboardScreen";
 import HandicapScreen from "./HandicapScreen";
 import HistoryScreen from "./HistoryScreen";
-import PlayerStatsScreen from "./PlayerStatsScreen"; // 1. Importa a nova tela
+import PlayerStatsScreen from "./PlayerStatsScreen";
 import Button from "../components/Button";
 import Spinner from "../components/Spinner";
 
-// 2. Adiciona 'STATS' como uma tela válida
 type Screen =
   | "HOME"
   | "LEADERBOARD"
@@ -34,14 +33,12 @@ const MainScreen: React.FC = () => {
   >(null);
   const [loading, setLoading] = useState(false);
 
-  // screens/MainScreen.tsx -> Função handleSelectLeaderboard ATUALIZADA
-
   const handleSelectLeaderboard = async () => {
     setLoading(true);
     try {
-      // Adiciona o parâmetro '?status=active' para buscar apenas torneios "ao vivo"
+      // CORREÇÃO APLICADA AQUI
       const response = await axios.get(
-        "http://localhost:3001/api/tournaments?status=active"
+        `${import.meta.env.VITE_API_URL}/api/tournaments?status=active`
       );
       setTournaments(response.data);
       setScreen("SELECT_LEADERBOARD");
@@ -73,7 +70,6 @@ const MainScreen: React.FC = () => {
     setScreen("SCORECARD");
   }, []);
 
-  // 3. Lógica de renderização atualizada
   if (!user) return null;
 
   if (screen === "STATS") {
@@ -138,7 +134,6 @@ const MainScreen: React.FC = () => {
     return <AdminDashboardScreen onBack={handleBackToHome} />;
   }
 
-  // 4. Grid de botões atualizado
   return (
     <div className="space-y-8">
       <div className="p-6 bg-gray-800 rounded-lg shadow-lg text-center">
@@ -201,7 +196,6 @@ const MainScreen: React.FC = () => {
           </Button>
         </div>
 
-        {/* NOVO BOTÃO DE ESTATÍSTICAS */}
         <div className="p-6 bg-gray-800 rounded-lg shadow-lg">
           <h2 className="text-2xl font-bold text-green-400 mb-4">
             Minhas Estatísticas
