@@ -29,7 +29,8 @@ const createInitialHoles = (): HoleData[] => {
     }));
 };
 
-const ManageCourses: React.FC = () => {
+// 1. Recebendo a nova propriedade 'onCourseCreated'
+const ManageCourses: React.FC<{ onCourseCreated: () => void }> = ({ onCourseCreated }) => {
     const [courses, setCourses] = useState<AdminCourse[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -63,18 +64,18 @@ const ManageCourses: React.FC = () => {
         }
         setHolesData(newHolesData);
     };
-    
+
     const handleImageChange = (holeNumber: number, file: File | null) => {
         setHoleImages(prev => ({ ...prev, [holeNumber]: file }));
     };
 
     const handleCreateCourse = async (e: React.FormEvent) => {
         e.preventDefault();
-        
+
         const formData = new FormData();
         formData.append('name', newCourseName);
         formData.append('location', newCourseLocation);
-        
+
         const holesPayload = holesData.map(hole => ({
             ...hole,
             par: parseInt(hole.par, 10),
@@ -95,13 +96,17 @@ const ManageCourses: React.FC = () => {
             await axios.post(`${import.meta.env.VITE_API_URL}/api/courses`, formData, {
                 headers: { 'Content-Type': 'multipart/form-data' }
             });
-            
+
             setNewCourseName('');
             setNewCourseLocation('');
             setHolesData(createInitialHoles());
             setHoleImages({});
-            fetchCourses();
             alert('Campo criado com sucesso!');
+
+            // 2. Chamando a função para atualizar a lista no painel principal
+            if (onCourseCreated) {
+                onCourseCreated();
+            }
 
         } catch (error) {
             alert("Erro ao criar o campo. Verifique o console.");
@@ -113,7 +118,8 @@ const ManageCourses: React.FC = () => {
         if (window.confirm('Tem a certeza?')) {
             try {
                 await axios.delete(`${import.meta.env.VITE_API_URL}/api/courses/${courseId}`);
-                fetchCourses();
+                // Recarrega a lista de campos após apagar
+                fetchCourses(); 
             } catch (error: any) {
                 alert(error.response?.data?.error || 'Não foi possível apagar o campo.');
             }
@@ -123,6 +129,7 @@ const ManageCourses: React.FC = () => {
     if (loading) return <p>A carregar...</p>;
     if (error) return <div className="text-red-400">{error}</div>;
 
+    // O resto do seu código JSX continua aqui sem alterações...
     return (
         <div className="space-y-8">
             <div className="p-6 bg-gray-700/50 rounded-lg">

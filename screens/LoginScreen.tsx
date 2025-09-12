@@ -75,7 +75,7 @@ const LoginScreen: React.FC = () => {
     <div className="flex flex-col items-center justify-center min-h-[70vh]">
       <div className="w-full max-w-md p-8 space-y-6 bg-gray-800 rounded-xl shadow-lg">
         <div className="text-center">
-            <GolfPinIcon className="mx-auto h-12 w-12 text-green-400" />
+            <img src="/logoapp.png" alt="Birdify Logo" className="mx-auto h-20 w-auto mb-6" />
             <h2 className="mt-6 text-3xl font-extrabold text-white">
                 {isRegistering ? 'Crie a sua Conta' : 'Acesse o Birdify'}
             </h2>

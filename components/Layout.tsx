@@ -18,7 +18,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         <nav className="container mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center">
-              <GolfPinIcon className="h-8 w-8 text-green-400" />
+          <img src="/logoapp.png" alt="Birdify Logo" className="h-16 w-auto" />
               {/* NOME ALTERADO AQUI */}
               <span className="ml-3 text-2xl font-bold text-white">Birdify</span>
             </div>

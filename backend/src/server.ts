@@ -36,10 +36,20 @@ const dbConfig = {
 };
 
 // --- ROTAS PARA CAMPOS (COURSES) ---
+// backend/src/server.ts -> Rota GET /api/courses ATUALIZADA
+
 app.get('/api/courses', async (req: Request, res: Response) => {
     try {
+        const { adminId } = req.query; // Recebe o adminId da URL
+
+        if (!adminId) {
+            // Se nenhum adminId for fornecido, retorna um erro claro
+            return res.status(400).json({ error: 'Admin ID é obrigatório para buscar os campos.' });
+        }
+
         const connection = await mysql.createConnection(dbConfig);
-        const [rows] = await connection.execute('SELECT * FROM courses');
+        // Filtra os campos pelo adminId fornecido
+        const [rows] = await connection.execute('SELECT * FROM courses WHERE adminId = ?', [adminId]);
         await connection.end();
         res.json(rows);
     } catch (error) {
@@ -51,12 +61,12 @@ app.post('/api/courses', upload.array('holeImages'), async (req: Request, res: R
     const pool = mysql.createPool(dbConfig);
     const connection = await pool.getConnection();
     try {
-        const { name, location } = req.body;
+        const { name, location, adminId } = req.body; 
         const holes = JSON.parse(req.body.holes);
         const files = req.files as Express.Multer.File[];
         const fileMap = new Map(files.map(f => [f.originalname, f.filename]));
         await connection.beginTransaction();
-        const [courseResult]: any = await connection.execute('INSERT INTO courses (name, location) VALUES (?, ?)', [name, location]);
+        const [courseResult]: any = await connection.execute('INSERT INTO courses (name, location, adminId) VALUES (?, ?, ?)', [name, location, adminId]);
         const newCourseId = courseResult.insertId;
         for (const holeData of holes) {
             const originalFileName = `hole_${holeData.holeNumber}`;
@@ -311,11 +321,15 @@ app.get('/api/players', async (req: Request, res: Response) => {
     try {
         const { tournamentId } = req.query;
         const connection = await mysql.createConnection(dbConfig);
-        let query = 'SELECT * FROM players';
+
+        // Filtra para mostrar apenas utilizadores com role diferente de 'admin'
+        let query = "SELECT * FROM players WHERE role != 'admin'";
         let params: any[] = [];
+
         if (tournamentId) {
+            // Adiciona a condição para excluir jogadores que já estão em grupos nesse torneio
             query += `
-                WHERE id NOT IN (
+                AND id NOT IN (
                     SELECT gp.playerId FROM group_players gp
                     JOIN \`groups\` g ON gp.groupId = g.id
                     WHERE g.tournamentId = ?
@@ -323,6 +337,7 @@ app.get('/api/players', async (req: Request, res: Response) => {
             `;
             params.push(tournamentId);
         }
+
         query += ' ORDER BY fullName';
         const [rows] = await connection.execute(query, params);
         await connection.end();
@@ -478,6 +493,12 @@ app.post('/api/login', async (req: Request, res: Response) => {
 app.get('/api/scorecard/:accessCode', async (req: Request, res: Response) => {
     try {
         const { accessCode } = req.params;
+        const { playerId } = req.query; // Recebe o ID do jogador que está a aceder
+
+        if (!playerId) {
+            return res.status(400).json({ error: 'Player ID é obrigatório para aceder ao scorecard.' });
+        }
+
         const connection = await mysql.createConnection(dbConfig);
         const [groupDetails]: any[] = await connection.execute(`
             SELECT g.id as groupId, g.startHole, g.status, t.id as tournamentId, t.name as tournamentName, c.name as courseName, c.id as courseId
@@ -486,8 +507,32 @@ app.get('/api/scorecard/:accessCode', async (req: Request, res: Response) => {
             JOIN courses c ON t.courseId = c.id
             WHERE g.accessCode = ?
         `, [accessCode]);
-        if (groupDetails.length === 0) return res.status(404).json({ error: 'Código de acesso inválido.' });
+
+        if (groupDetails.length === 0) {
+            await connection.end();
+            return res.status(404).json({ error: 'Código de acesso inválido.' });
+        }
+
         const group = groupDetails[0];
+
+        // --- BLOCO DE VERIFICAÇÃO DE PERMISSÃO ---
+        const [userRole]: any[] = await connection.execute('SELECT role FROM players WHERE id = ?', [playerId]);
+        const isAdmin = userRole.length > 0 && userRole[0].role === 'admin';
+
+        if (!isAdmin) { // Se não for admin, verifica se pertence ao grupo
+            const [playersInGroup]: any[] = await connection.execute(
+                'SELECT playerId FROM group_players WHERE groupId = ?',
+                [group.groupId]
+            );
+            const isPlayerInGroup = playersInGroup.some(p => p.playerId.toString() === playerId);
+
+            if (!isPlayerInGroup) {
+                await connection.end();
+                return res.status(403).json({ error: 'Acesso negado: você não pertence a este grupo.' });
+            }
+        }
+        // --- FIM DO BLOCO DE VERIFICAÇÃO ---
+
         const [players] = await connection.execute(`
             SELECT p.id, p.fullName, gp.teeColor
             FROM group_players gp
@@ -503,7 +548,7 @@ app.get('/api/scorecard/:accessCode', async (req: Request, res: Response) => {
             hole.tees = tees;
         }
         group.holes = holes;
-        
+
         await connection.end();
         res.json(group);
     } catch (error) {

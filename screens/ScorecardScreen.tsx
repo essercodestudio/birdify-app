@@ -261,7 +261,7 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode, onBack, i
                                 </button>
                             )}
                         </div>
-                        <div className="hidden sm:flex justify-center gap-x-3 items-center mt-1">
+                        <div className="flex flex-wrap justify-center gap-x-3 items-center mt-1">
                             {currentHoleInfo?.tees.map(tee => (
                                 <div key={tee.id} className="flex items-center gap-x-1">
                                     <div className={`w-2 h-2 rounded-full ${teeColorStyles[tee.color]?.replace('text-', 'bg-').split(' ')[0]}`}></div>
