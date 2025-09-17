@@ -1,6 +1,6 @@
-// screens/AdminDashboardScreen.tsx - CORRIGIDO
+// screens/AdminDashboardScreen.tsx - VERSÃO CORRIGIDA
 
-import React, { useState, useEffect, useCallback, useContext } from 'react'; // Adicionado useContext
+import React, { useState, useEffect, useCallback, useContext } from 'react';
 import axios from 'axios';
 import { AuthContext } from '../context/AuthContext'; // Importe o AuthContext
 import ManageCourses from '../components/admin/ManageCourses';
@@ -18,16 +18,15 @@ type AdminTab = 'courses' | 'tournaments' | 'groups';
 
 const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({ onBack }) => {
   const { user } = useContext(AuthContext); // Obtenha o utilizador logado
-  const [activeTab, setActiveTab] = useState<AdminTab>('courses');
+  const [activeTab, setActiveTab] = useState<AdminTab>('tournaments'); // Inicia na aba de torneios para facilitar o teste
   const [courses, setCourses] = useState<AdminCourse[]>([]);
   const [loadingCourses, setLoadingCourses] = useState(true);
 
   const fetchCoursesForPanel = useCallback(async () => {
-    if (!user) return; // Não faz nada se não houver utilizador
+    if (!user) return; 
 
     setLoadingCourses(true);
     try {
-      // Agora enviamos o adminId como um parâmetro na URL
       const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/courses`, {
         params: { adminId: user.id } 
       });
@@ -37,7 +36,7 @@ const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({ onBack }) =
     } finally {
       setLoadingCourses(false);
     }
-  }, [user]); // A função agora depende do 'user'
+  }, [user]); 
 
   useEffect(() => {
     fetchCoursesForPanel();
@@ -76,12 +75,16 @@ const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({ onBack }) =
 
       <div>
         {activeTab === 'courses' && (
-          <ManageCourses onCourseCreated={fetchCoursesForPanel} />
+          <ManageCourses 
+              onCourseCreated={fetchCoursesForPanel} 
+              adminUser={user} // <<< ADICIONE ESTA LINHA
+          />
         )}
         {activeTab === 'tournaments' && (
           loadingCourses ? <p>A carregar campos...</p> :
             <ManageTournaments
                 courses={courses} 
+                adminUser={user}
             />
         )}
         {activeTab === 'groups' && (

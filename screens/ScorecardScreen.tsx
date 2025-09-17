@@ -1,17 +1,19 @@
-// screens/ScorecardScreen.tsx - ATUALIZADO
+// screens/ScorecardScreen.tsx - VERSÃO CORRIGIDA COM EDIÇÃO APENAS NO FINAL
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useContext } from 'react';
 import axios from 'axios';
+import { AuthContext } from '../context/AuthContext';
 import Spinner from '../components/Spinner';
 import Button from '../components/Button';
 import ChevronLeftIcon from '../components/icons/ChevronLeftIcon';
 import ChevronRightIcon from '../components/icons/ChevronRightIcon';
 import PlusIcon from '../components/icons/PlusIcon';
 import MinusIcon from '../components/icons/MinusIcon';
-import LeaderboardScreen from './LeaderboardScreen'; 
+import LeaderboardScreen from './LeaderboardScreen';
 import PhotoIcon from '../components/icons/PhotoIcon';
 
-interface ScorecardScreenProps { accessCode: string; onBack: () => void; isEditingMode?: boolean; }
+// Interfaces (mantidas do seu código original)
+interface ScorecardScreenProps { accessCode: string; onBack: () => void; }
 interface PlayerData { id: number; fullName: string; teeColor: string; }
 interface ScoreData { playerId: number; holeNumber: number; strokes: number; }
 interface TeeData { id: number; holeId: number; color: string; yardage: number; }
@@ -34,105 +36,126 @@ const teeColorStyles: { [key: string]: string } = {
     Red: 'border-red-500 text-red-500',
 };
 
-const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode, onBack, isEditingMode = false }) => {
+// Função auxiliar para criar a sequência de buracos (shotgun)
+const generateHoleSequence = (startHole: number): number[] => {
+    const sequence: number[] = [];
+    for (let i = 0; i < 18; i++) {
+        const holeNumber = ((startHole - 1 + i) % 18) + 1;
+        sequence.push(holeNumber);
+    }
+    return sequence;
+};
+
+const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAccessCode, onBack }) => {
+    const { user } = useContext(AuthContext);
+    const [accessCode, setAccessCode] = useState(initialAccessCode);
     const [data, setData] = useState<ScorecardData | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const [currentHole, setCurrentHole] = useState(1);
-    const [localScores, setLocalScores] = useState<Record<string, Record<number, number | null>>>({});
-    const [highestPlayableHole, setHighestPlayableHole] = useState(1);
-    const [view, setView] = useState<'SCORECARD' | 'LEADERBOARD' | 'SUMMARY'>('SCORECARD');
-    const [isEditing, setIsEditing] = useState(isEditingMode);
-    const [modalImageUrl, setModalImageUrl] = useState<string | null>(null);
+    
+    // Estados para a nova lógica de sequência e edição
+    const [holeSequence, setHoleSequence] = useState<number[]>([]);
+    const [currentStep, setCurrentStep] = useState(0);
+    const [highestAllowedStep, setHighestAllowedStep] = useState(0);
+    const [isEditing, setIsEditing] = useState(false); // Estado para controlar o modo de edição
 
-    const isHoleComplete = (hole: number, scores: Record<string, Record<number, number | null>>, players: PlayerData[]): boolean => { 
-        if (!players) return false;
+    const [localScores, setLocalScores] = useState<Record<string, Record<number, number | null>>>({});
+    const [view, setView] = useState<'SCORECARD' | 'LEADERBOARD' | 'SUMMARY'>('SCORECARD');
+    const [modalImageUrl, setModalImageUrl] = useState<string | null>(null);
+    
+    // Sessão Persistente
+    useEffect(() => {
+        const persistedAccessCode = localStorage.getItem('activeAccessCode');
+        if (persistedAccessCode) {
+            setAccessCode(persistedAccessCode);
+        }
+    }, []);
+    
+    const isHoleComplete = (holeNum: number, scores: Record<string, Record<number, number | null>>, players: PlayerData[]): boolean => {
+        if (!players || players.length === 0) return false;
         return players.every(player => {
-            const score = scores[player.id]?.[hole];
+            const score = scores[player.id]?.[holeNum];
             return typeof score === 'number' && score > 0;
         });
     };
 
     const fetchScorecardData = useCallback(async () => { 
+        if (!accessCode || !user) return;
+        
         try {
             setLoading(true);
-            const response = await axios.get<ScorecardData>(`${import.meta.env.VITE_API_URL}/api/scorecard/${accessCode}`);
+            const response = await axios.get<ScorecardData>(`${import.meta.env.VITE_API_URL}/api/scorecard/${accessCode}?playerId=${user.id}`);
             const groupData = response.data;
             setData(groupData);
-            setCurrentHole(groupData.startHole);
-            const scoresMap: Record<string, Record<number, number | null>> = {};
-            groupData.players.forEach(p => {
-              scoresMap[p.id] = {};
-            });
-            groupData.scores.forEach(s => {
-              if (scoresMap[s.playerId]) {
-                scoresMap[s.playerId][s.holeNumber] = s.strokes;
-              }
-            });
-            setLocalScores(scoresMap);
 
-            if (isEditingMode || groupData.status === 'completed') {
-                setIsEditing(true);
-                setHighestPlayableHole(18);
-                if (groupData.status === 'completed') setView('SUMMARY');
-            } else {
-                let lastCompletedHole = groupData.startHole - 1;
-                for (let i = groupData.startHole; i <= 18; i++) {
-                    if (isHoleComplete(i, scoresMap, groupData.players)) {
-                        lastCompletedHole = i;
-                    } else {
-                        break;
-                    }
+            const sequence = generateHoleSequence(groupData.startHole);
+            setHoleSequence(sequence);
+
+            const scoresMap: Record<string, Record<number, number | null>> = {};
+            groupData.players.forEach(p => { scoresMap[p.id] = {}; });
+            groupData.scores.forEach(s => { if (scoresMap[s.playerId]) { scoresMap[s.playerId][s.holeNumber] = s.strokes; } });
+            setLocalScores(scoresMap);
+            
+            let lastCompletedStep = -1;
+            for (let i = 0; i < sequence.length; i++) {
+                if (isHoleComplete(sequence[i], scoresMap, groupData.players)) {
+                    lastCompletedStep = i;
+                } else {
+                    break;
                 }
-                setHighestPlayableHole(lastCompletedHole + 1);
             }
+            const currentPlayableStep = Math.min(lastCompletedStep + 1, 17);
+            setCurrentStep(currentPlayableStep);
+            setHighestAllowedStep(currentPlayableStep);
+
+            if (groupData.status === 'completed') {
+                setView('SUMMARY');
+                setIsEditing(true); // Permite edição se a rodada já estiver finalizada no backend
+            }
+
             setError(null);
           } catch (err: any) {
               setError('Não foi possível carregar os dados do scorecard.');
+              localStorage.removeItem('activeAccessCode');
           } finally {
             setLoading(false);
           }
-    }, [accessCode, isEditingMode]);
+    }, [accessCode, user]);
 
     useEffect(() => {
         fetchScorecardData();
     }, [fetchScorecardData]);
 
     const handleScoreChange = (playerId: number, hole: number, change: number) => { 
-        const currentStrokes = localScores[playerId]?.[hole];
-        let newStrokes;
-        if (currentStrokes) {
-            newStrokes = Math.max(1, currentStrokes + change);
-        } else {
-            newStrokes = change > 0 ? 1 : null;
-        }
-        if (newStrokes === null) return;
         const newLocalScores = JSON.parse(JSON.stringify(localScores));
-        newLocalScores[playerId][hole] = newStrokes;
+        const currentStrokes = newLocalScores[playerId]?.[hole] || 0;
+        newLocalScores[playerId][hole] = Math.max(1, currentStrokes + change);
         setLocalScores(newLocalScores);
     };
 
     const handleConfirmHole = async () => { 
-        if (!data || !isHoleComplete(currentHole, localScores, data.players)) {
+        const currentHoleNumber = holeSequence[currentStep];
+        if (!data || !isHoleComplete(currentHoleNumber, localScores, data.players)) {
             return alert("Preencha a pontuação de todos os jogadores para confirmar.");
         }
+
         const scoresToSubmit = data.players.map(player => ({
             playerId: player.id,
-            strokes: localScores[player.id][currentHole]
+            strokes: localScores[player.id][currentHoleNumber]
         }));
         try {
             await axios.post(`${import.meta.env.VITE_API_URL}/api/scores/hole`, {
                 groupId: data.groupId,
-                holeNumber: currentHole,
+                holeNumber: currentHoleNumber,
                 scores: scoresToSubmit
             });
-            if (currentHole === highestPlayableHole && currentHole < 18) {
-                setHighestPlayableHole(currentHole + 1);
-            }
-            if (currentHole === 18) {
-                setView('SUMMARY');
+            
+            if (currentStep < 17) {
+                const nextStep = currentStep + 1;
+                setCurrentStep(nextStep);
+                setHighestAllowedStep(nextStep);
             } else {
-                alert(`Pontuações do buraco ${currentHole} confirmadas e salvas!`);
+                setView('SUMMARY'); // Vai para o resumo após o último buraco
             }
         } catch (error) {
             setError("Não foi possível salvar as pontuações.");
@@ -141,26 +164,33 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode, onBack, i
     
     const handleFinishRound = async () => {
         if (!data) return;
-        const confirmationMessage = isEditing ? 'Tem a certeza de que quer salvar as alterações?' : 'Tem a certeza de que quer finalizar a rodada? Não será possível fazer mais alterações.';
+        const confirmationMessage = isEditing 
+            ? 'Tem a certeza de que quer salvar as alterações?' 
+            : 'Tem a certeza de que quer finalizar a rodada? Não será possível fazer mais alterações.';
         
         if(window.confirm(confirmationMessage)) {
             try {
-                for(let i=1; i<=18; i++){
-                    if(isHoleComplete(i, localScores, data.players)){
-                        const scoresToSubmit = data.players.map(player => ({
-                            playerId: player.id,
-                            strokes: localScores[player.id][i]
-                        }));
-                        await axios.post(`${import.meta.env.VITE_API_URL}/api/scores/hole`, {
-                            groupId: data.groupId,
-                            holeNumber: i,
-                            scores: scoresToSubmit
-                        });
+                // Se estiver em modo de edição, salva todos os buracos preenchidos
+                if (isEditing) {
+                    for (const holeNum of holeSequence) {
+                         if (isHoleComplete(holeNum, localScores, data.players)) {
+                            const scoresToSubmit = data.players.map(player => ({
+                                playerId: player.id,
+                                strokes: localScores[player.id][holeNum]
+                            }));
+                             await axios.post(`${import.meta.env.VITE_API_URL}/api/scores/hole`, {
+                                groupId: data.groupId,
+                                holeNumber: holeNum,
+                                scores: scoresToSubmit
+                            });
+                         }
                     }
                 }
-                if (!isEditing) {
+                
+                if (!isEditing) { // Só finaliza a rodada se não estava no modo de edição
                     await axios.post(`${import.meta.env.VITE_API_URL}/api/groups/finish`, { groupId: data.groupId });
                 }
+                localStorage.removeItem('activeAccessCode');
                 onBack();
             } catch (error) {
                 alert('Não foi possível finalizar a rodada.');
@@ -169,31 +199,28 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode, onBack, i
     };
 
     const changeHole = (direction: number) => { 
-        const newHole = currentHole + direction;
-        if (isEditing) {
-            if (newHole >= 1 && newHole <= 18) setCurrentHole(newHole);
-        } else {
-            if ((direction < 0 && newHole >= data!.startHole) || (direction > 0 && newHole <= highestPlayableHole && newHole <= 18)) {
-              setCurrentHole(newHole);
-            }
+        const newStep = currentStep + direction;
+        // Se estiver em modo de edição, pode navegar livremente. Senão, respeita o limite.
+        if (isEditing && newStep >= 0 && newStep < 18) {
+            setCurrentStep(newStep);
+        } else if (!isEditing && newStep >= 0 && newStep <= highestAllowedStep) {
+            setCurrentStep(newStep);
         }
     };
 
-    const currentHoleInfo = useMemo(() => {
-        return data?.holes.find(h => h.holeNumber === currentHole);
-    }, [data, currentHole]);
-
+    const currentHoleNumber = holeSequence[currentStep];
+    const currentHoleInfo = useMemo(() => data?.holes.find(h => h.holeNumber === currentHoleNumber), [data, currentHoleNumber]);
     const totals = useMemo(() => {
         if (!data) return [];
         return data.players.map(player => {
-            const totalStrokes = Object.values(localScores[player.id] || {}).reduce((sum: number, strokes: number | null) => sum + (strokes || 0), 0);
+            const totalStrokes = holeSequence.reduce((sum, holeNum) => sum + (localScores[player.id]?.[holeNum] || 0), 0);
             return { ...player, total: totalStrokes };
         });
-    }, [data, localScores]);
+    }, [data, localScores, holeSequence]);
 
     if (loading) return <Spinner />;
     if (error) return <div className="text-red-400 text-center p-6 bg-red-900/50 rounded-lg">{error}</div>;
-    if (!data) return <p className="text-gray-400 text-center">Nenhum dado disponível.</p>;
+    if (!data) return <p className="text-gray-400 text-center">A carregar dados do torneio...</p>;
 
     if (view === 'LEADERBOARD') {
         return <LeaderboardScreen tournamentId={data.tournamentId.toString()} onBack={() => setView('SCORECARD')} />;
@@ -214,7 +241,7 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode, onBack, i
                 </div>
                 <div className="mt-8 flex flex-col sm:flex-row gap-4">
                     <Button onClick={handleFinishRound} className="w-full">
-                        {isEditing ? 'Confirmar Alterações' : 'Confirmar e Finalizar Rodada'}
+                        {isEditing ? 'Confirmar Alterações e Sair' : 'Confirmar e Finalizar Rodada'}
                     </Button>
                     <Button onClick={() => { setIsEditing(true); setView('SCORECARD'); }} variant="secondary" className="w-full">
                         Alterar Marcação
@@ -223,76 +250,51 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode, onBack, i
             </div>
         );
     }
-
-    const isHoleLocked = !isEditing && currentHole < highestPlayableHole;
+    
+    // O buraco está "trancado" se não estiver em modo de edição e o passo atual for menor que o passo máximo permitido
+    const isHoleLocked = !isEditing && currentStep < highestAllowedStep;
 
     return (
         <>
             {modalImageUrl && (
-                <div 
-                    className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50"
-                    onClick={() => setModalImageUrl(null)}
-                >
+                <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50" onClick={() => setModalImageUrl(null)}>
                     <img src={`${import.meta.env.VITE_API_URL}${modalImageUrl}`} alt={`Visão aérea do buraco ${currentHoleInfo?.holeNumber}`} className="max-w-[90%] max-h-[90%] object-contain rounded-lg"/>
                 </div>
             )}
             <div className="bg-gray-800 p-4 rounded-lg shadow-xl flex flex-col h-[calc(100vh-10rem)]">
                 <div className="flex justify-between items-center pb-4 border-b border-gray-700">
-                    <Button onClick={onBack} variant="secondary" size="sm">
-                        <ChevronLeftIcon className="h-5 w-5 mr-1"/> Início
-                    </Button>
+                    <Button onClick={onBack} variant="secondary" size="sm"><ChevronLeftIcon className="h-5 w-5 mr-1"/> Início</Button>
                     <h2 className="text-xl font-bold text-center">{data.tournamentName}</h2>
-                    <Button onClick={() => setView('LEADERBOARD')} size="sm">
-                        Ver Leaderboard
-                    </Button>
+                    <Button onClick={() => setView('LEADERBOARD')} size="sm">Ver Leaderboard</Button>
                 </div>
                 <div className="flex items-center justify-between p-4 my-4 bg-gray-900 rounded-lg">
-                    <Button size="icon" onClick={() => changeHole(-1)} disabled={!isEditing && currentHole === data.startHole}>
-                        <ChevronLeftIcon className="h-6 w-6"/>
-                    </Button>
+                    <Button size="icon" onClick={() => changeHole(-1)} disabled={currentStep === 0}><ChevronLeftIcon className="h-6 w-6"/></Button>
                     <div className="text-center">
                         <p className="text-gray-400 text-sm">BURACO</p>
-                        <p className="text-4xl font-bold text-white">{currentHoleInfo?.holeNumber}</p>
+                        <p className="text-4xl font-bold text-white">{currentHoleNumber}</p>
                         <div className="text-gray-400 flex items-center justify-center gap-x-4 mt-1">
                             <span className="font-bold">PAR {currentHoleInfo?.par}</span>
                             {currentHoleInfo?.aerialImageUrl && (
-                                <button onClick={() => setModalImageUrl(currentHoleInfo.aerialImageUrl!)}>
-                                    <PhotoIcon className="h-5 w-5 text-blue-400 hover:text-blue-300"/>
-                                </button>
+                                <button onClick={() => setModalImageUrl(currentHoleInfo.aerialImageUrl!)}><PhotoIcon className="h-5 w-5 text-blue-400 hover:text-blue-300"/></button>
                             )}
                         </div>
-                        <div className="flex flex-wrap justify-center gap-x-3 items-center mt-1">
-                            {currentHoleInfo?.tees.map(tee => (
-                                <div key={tee.id} className="flex items-center gap-x-1">
-                                    <div className={`w-2 h-2 rounded-full ${teeColorStyles[tee.color]?.replace('text-', 'bg-').split(' ')[0]}`}></div>
-                                    <span className={`text-xs font-semibold ${teeColorStyles[tee.color]}`}>
-                                        {tee.yardage}j
-                                    </span>
-                                </div>
-                            ))}
-                        </div>
                     </div>
-                    <Button size="icon" onClick={() => changeHole(1)} disabled={!isEditing && (currentHole === highestPlayableHole || currentHole === 18)}>
-                        <ChevronRightIcon className="h-6 w-6"/>
-                    </Button>
+                    <Button size="icon" onClick={() => changeHole(1)} disabled={!isEditing && currentStep >= highestAllowedStep}><ChevronRightIcon className="h-6 w-6"/></Button>
                 </div>
                 <div className="flex-grow overflow-y-auto space-y-3 pr-2">
                     {data.players.map(player => {
-                        const score = localScores[player.id]?.[currentHole];
+                        const score = localScores[player.id]?.[currentHoleNumber];
                         return (
                             <div key={player.id} className="grid grid-cols-3 items-center p-3 bg-gray-700 rounded-lg">
                                 <div className="col-span-1">
                                     <p className="font-bold text-white truncate">{player.fullName}</p>
-                                    <div className={`mt-1 text-xs font-bold border px-1.5 py-0.5 rounded-full inline-block ${teeColorStyles[player.teeColor]}`}>
-                                        {player.teeColor}
-                                    </div>
                                 </div>
                                 <div className="col-span-2 flex items-center justify-end space-x-2">
-                                    <Button size="icon" variant="secondary" onClick={() => handleScoreChange(player.id, currentHole, -1)} disabled={!score || score === 1 || isHoleLocked}>
+                                    <Button size="icon" variant="secondary" onClick={() => handleScoreChange(player.id, currentHoleNumber, -1)} disabled={!score || score === 1 || isHoleLocked}>
                                         <MinusIcon className="h-6 w-6"/>
                                     </Button>
                                     <span className="text-3xl font-bold w-12 text-center text-green-400">{score ?? '-'}</span>
-                                    <Button size="icon" variant="secondary" onClick={() => handleScoreChange(player.id, currentHole, 1)} disabled={isHoleLocked}>
+                                    <Button size="icon" variant="secondary" onClick={() => handleScoreChange(player.id, currentHoleNumber, 1)} disabled={isHoleLocked}>
                                         <PlusIcon className="h-6 w-6"/>
                                     </Button>
                                 </div>
@@ -302,14 +304,14 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode, onBack, i
                 </div>
                 <div className="mt-auto pt-4 border-t border-gray-700">
                     {isEditing ? (
-                        <Button onClick={() => setView('SUMMARY')} className="w-full">Finalizar Alterações</Button>
+                        <Button onClick={() => setView('SUMMARY')} className="w-full">Ver Resumo e Finalizar</Button>
                     ) : isHoleLocked ? (
                         <div className="text-center text-green-400 font-bold p-3 bg-green-900/50 rounded-lg">
-                            Buraco {currentHole} já foi confirmado.
+                            Buraco {currentHoleNumber} já foi confirmado.
                         </div>
                     ) : (
-                        <Button onClick={handleConfirmHole} className="w-full" disabled={!isHoleComplete(currentHole, localScores, data.players)}>
-                           {currentHole === 18 ? "Confirmar Buraco 18 e Ver Resumo" : `Confirmar Pontuações do Buraco ${currentHole}`}
+                        <Button onClick={handleConfirmHole} className="w-full" disabled={!isHoleComplete(currentHoleNumber, localScores, data.players)}>
+                           {currentStep === 17 ? "Confirmar Buraco Final e Ver Resumo" : `Confirmar Pontuações do Buraco ${currentHoleNumber}`}
                         </Button>
                     )}
                 </div>

@@ -1,13 +1,15 @@
-// screens/HandicapScreen.tsx - ATUALIZADO E CORRIGIDO
+// screens/HandicapScreen.tsx - VERSÃO CORRIGIDA
 
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import Button from '../components/Button';
 import Spinner from '../components/Spinner';
+import { User } from '../types'; // Importe o tipo User
 
 interface HandicapScreenProps {
   accessCode: string;
   onHandicapsSubmitted: () => void;
+  user: User | null; // <<< ALTERAÇÃO: Recebe o utilizador logado
 }
 
 interface GroupPlayerData {
@@ -19,7 +21,7 @@ interface GroupData {
     players: GroupPlayerData[];
 }
 
-const HandicapScreen: React.FC<HandicapScreenProps> = ({ accessCode, onHandicapsSubmitted }) => {
+const HandicapScreen: React.FC<HandicapScreenProps> = ({ accessCode, onHandicapsSubmitted, user }) => {
   const [groupData, setGroupData] = useState<GroupData | null>(null);
   const [handicaps, setHandicaps] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
@@ -27,8 +29,15 @@ const HandicapScreen: React.FC<HandicapScreenProps> = ({ accessCode, onHandicaps
 
   useEffect(() => {
     const fetchGroupData = async () => {
+      // Garante que só faz a chamada se o utilizador estiver definido
+      if (!user) {
+          setError('Utilizador não autenticado.');
+          setLoading(false);
+          return;
+      }
       try {
-        const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/scorecard/${accessCode}`);
+        // <<< ALTERAÇÃO: Adiciona o playerId à chamada da API
+        const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/scorecard/${accessCode}?playerId=${user.id}`);
         setGroupData(response.data);
       } catch (err) {
         setError('Não foi possível carregar os dados do grupo.');
@@ -37,7 +46,7 @@ const HandicapScreen: React.FC<HandicapScreenProps> = ({ accessCode, onHandicaps
       }
     };
     fetchGroupData();
-  }, [accessCode]);
+  }, [accessCode, user]); // A função agora depende do 'user'
 
   const handleHandicapChange = (playerId: string, value: string) => {
     if (/^\d*$/.test(value)) {

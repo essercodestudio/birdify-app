@@ -1,3 +1,5 @@
+// src/App.jsx - CORRIGIDO
+
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthProvider.jsx';
@@ -7,6 +9,8 @@ import MainScreen from './screens/MainScreen.jsx';
 import LeaderboardScreen from './screens/LeaderboardScreen.jsx';
 import ScorecardScreen from './screens/ScorecardScreen.jsx';
 import AdminDashboardScreen from './screens/AdminDashboardScreen.jsx';
+// 1. IMPORTE O NOVO ECRÃ AQUI
+import ResetPasswordScreen from './screens/ResetPasswordScreen.tsx';
 
 // Componente para rotas protegidas
 const ProtectedRoute = ({ children }) => {
@@ -36,6 +40,9 @@ const AppRoutes = () => {
       <Routes>
         {/* Rota Pública */}
         <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginScreen />} />
+        
+        {/* 2. ADICIONE A NOVA ROTA AQUI */}
+        <Route path="/reset/:token" element={<ResetPasswordScreen />} />
         
         {/* Rotas Protegidas */}
         <Route path="/" element={<ProtectedRoute><MainScreen /></ProtectedRoute>} />

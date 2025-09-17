@@ -1,5 +1,7 @@
-// backend/src.server.ts - VERSÃO COMPLETA E FINAL COM TODAS AS FUNCIONALIDADES
+// backend/src/server.ts - VERSÃO COMPLETA E CORRIGIDA
 
+import nodemailer from 'nodemailer';
+import crypto from 'crypto';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -8,6 +10,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import ExcelJS from 'exceljs';
+import bcrypt from 'bcrypt';
 
 dotenv.config();
 const app = express();
@@ -36,19 +39,13 @@ const dbConfig = {
 };
 
 // --- ROTAS PARA CAMPOS (COURSES) ---
-// backend/src/server.ts -> Rota GET /api/courses ATUALIZADA
-
 app.get('/api/courses', async (req: Request, res: Response) => {
     try {
-        const { adminId } = req.query; // Recebe o adminId da URL
-
+        const { adminId } = req.query;
         if (!adminId) {
-            // Se nenhum adminId for fornecido, retorna um erro claro
             return res.status(400).json({ error: 'Admin ID é obrigatório para buscar os campos.' });
         }
-
         const connection = await mysql.createConnection(dbConfig);
-        // Filtra os campos pelo adminId fornecido
         const [rows] = await connection.execute('SELECT * FROM courses WHERE adminId = ?', [adminId]);
         await connection.end();
         res.json(rows);
@@ -57,11 +54,12 @@ app.get('/api/courses', async (req: Request, res: Response) => {
         res.status(500).json({ error: 'Erro ao buscar campos' });
     }
 });
+
 app.post('/api/courses', upload.array('holeImages'), async (req: Request, res: Response) => {
     const pool = mysql.createPool(dbConfig);
     const connection = await pool.getConnection();
     try {
-        const { name, location, adminId } = req.body; 
+        const { name, location, adminId } = req.body;
         const holes = JSON.parse(req.body.holes);
         const files = req.files as Express.Multer.File[];
         const fileMap = new Map(files.map(f => [f.originalname, f.filename]));
@@ -95,6 +93,7 @@ app.post('/api/courses', upload.array('holeImages'), async (req: Request, res: R
         pool.end();
     }
 });
+
 app.delete('/api/courses/:id', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
@@ -110,30 +109,43 @@ app.delete('/api/courses/:id', async (req: Request, res: Response) => {
         res.status(500).json({ error: 'Erro ao apagar campo.' });
     }
 });
-
-// --- ROTAS PARA TORNEIOS (TOURNAMENTS) ---
-// backend/src/server.ts -> Rota GET /api/tournaments ATUALIZADA
+// backend/src/server.ts -> Substitua esta rota
 
 app.get('/api/tournaments', async (req: Request, res: Response) => {
     try {
-        const { status } = req.query; // Pega o parâmetro opcional 'status'
+        const { status, adminId, modality } = req.query; // Adicionado 'modality'
         const connection = await mysql.createConnection(dbConfig);
-        
+
         let query = `
             SELECT t.id, t.name, t.date, t.status, c.name AS courseName
             FROM tournaments t
             LEFT JOIN courses c ON t.courseId = c.id
         `;
-        const params: string[] = [];
+        const params: (string | number)[] = [];
+        let conditions: string[] = [];
 
-        // Se o status for fornecido na URL (ex: /api/tournaments?status=active), adiciona o filtro
+        if (adminId) {
+            conditions.push('t.adminId = ?');
+            params.push(parseInt(adminId as string, 10));
+        }
+
         if (status) {
-            query += ' WHERE t.status = ?';
+            conditions.push('t.status = ?');
             params.push(status as string);
         }
 
+        // Novo filtro de modalidade
+        if (modality) {
+            conditions.push('t.modality = ?');
+            params.push(modality as string);
+        }
+
+        if (conditions.length > 0) {
+            query += ' WHERE ' + conditions.join(' AND ');
+        }
+
         query += ' ORDER BY t.date DESC';
-        
+
         const [rows] = await connection.execute(query, params);
         await connection.end();
         res.json(rows);
@@ -142,15 +154,16 @@ app.get('/api/tournaments', async (req: Request, res: Response) => {
         res.status(500).json({ error: 'Erro ao buscar torneios' });
     }
 });
+
 app.post('/api/tournaments', async (req: Request, res: Response) => {
     try {
-        const { name, date, courseId, startTime } = req.body;
-        if (!name || !date || !courseId) {
-        return res.status(400).json({ error: 'Nome, data e campo são obrigatórios.' });
+        const { name, date, courseId, startTime, adminId } = req.body;
+        if (!name || !date || !courseId || !adminId) {
+            return res.status(400).json({ error: 'Nome, data, campo e adminId são obrigatórios.' });
         }
         const connection = await mysql.createConnection(dbConfig);
-        const query = 'INSERT INTO tournaments (name, date, courseId, startTime) VALUES (?, ?, ?, ?)';
-        const [result]: any = await connection.execute(query, [name, date, courseId, startTime || null]);
+        const query = 'INSERT INTO tournaments (name, date, courseId, startTime, adminId) VALUES (?, ?, ?, ?, ?)';
+        const [result]: any = await connection.execute(query, [name, date, courseId, startTime || null, adminId]);
         await connection.end();
         res.status(201).json({ id: result.insertId, ...req.body });
     } catch (error) {
@@ -158,6 +171,7 @@ app.post('/api/tournaments', async (req: Request, res: Response) => {
         res.status(500).json({ error: 'Erro ao criar torneio' });
     }
 });
+
 app.delete('/api/tournaments/:id', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
@@ -170,6 +184,7 @@ app.delete('/api/tournaments/:id', async (req: Request, res: Response) => {
         res.status(500).json({ error: 'Erro ao apagar torneio.' });
     }
 });
+
 app.post('/api/tournaments/:id/finish', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
@@ -182,6 +197,7 @@ app.post('/api/tournaments/:id/finish', async (req: Request, res: Response) => {
         res.status(500).json({ error: 'Erro ao finalizar torneio.' });
     }
 });
+
 app.get('/api/tournaments/:tournamentId/tees', async (req: Request, res: Response) => {
     try {
         const { tournamentId } = req.params;
@@ -201,6 +217,7 @@ app.get('/api/tournaments/:tournamentId/tees', async (req: Request, res: Respons
         res.status(500).json({ error: 'Erro ao buscar tees.' });
     }
 });
+
 app.get('/api/tournaments/:tournamentId/export-groups', async (req: Request, res: Response) => {
     try {
         const { tournamentId } = req.params;
@@ -229,7 +246,7 @@ app.get('/api/tournaments/:tournamentId/export-groups', async (req: Request, res
             return res.status(404).json({ error: 'Nenhum grupo encontrado para este torneio.' });
         }
 
-        const groupsByHole = groupRows.reduce((acc, row) => {
+        const groupsByHole = groupRows.reduce((acc: any, row: any) => {
             const { startHole, groupId, ...playerData } = row;
             if (!acc[startHole]) acc[startHole] = new Map();
             if (!acc[startHole].has(groupId)) {
@@ -270,7 +287,7 @@ app.get('/api/tournaments/:tournamentId/export-groups', async (req: Request, res
             let matchNumber = 1;
             let teeTime = new Date(`${tournament.date.toISOString().split('T')[0]}T${tournament.startTime || '08:00:00'}`);
 
-            groups.forEach(group => {
+            groups.forEach((group: any) => {
                 const formattedTime = teeTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
                 const startRow = currentRow;
                 group.players.forEach((playerName: string, index: number) => {
@@ -300,9 +317,14 @@ app.get('/api/tournaments/:tournamentId/export-groups', async (req: Request, res
         }
 
         sheet.columns.forEach(column => {
-            if (column.key === 'players') column.width = 40;
-            else if (column.key === 'code') column.width = 15;
-            else column.width = 12;
+            let maxLength = 0;
+            column.eachCell!({ includeEmpty: true }, (cell) => {
+                let columnLength = cell.value ? cell.value.toString().length : 10;
+                if (columnLength > maxLength) {
+                    maxLength = columnLength;
+                }
+            });
+            column.width = maxLength < 10 ? 10 : maxLength;
         });
 
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -317,17 +339,22 @@ app.get('/api/tournaments/:tournamentId/export-groups', async (req: Request, res
 });
 
 // --- ROTAS PARA JOGADORES (PLAYERS) ---
+// backend/src/server.ts -> SUBSTITUA ESTA ROTA
 app.get('/api/players', async (req: Request, res: Response) => {
     try {
-        const { tournamentId } = req.query;
+        const { tournamentId, modality } = req.query; // Adicionado 'modality'
         const connection = await mysql.createConnection(dbConfig);
 
-        // Filtra para mostrar apenas utilizadores com role diferente de 'admin'
-        let query = "SELECT * FROM players WHERE role != 'admin'";
         let params: any[] = [];
 
+        // Query base agora filtra por modalidade se ela for fornecida
+        let query = "SELECT id, fullName, gender FROM players WHERE role != 'admin'";
+        if (modality) {
+            query += " AND modality = ?";
+            params.push(modality);
+        }
+
         if (tournamentId) {
-            // Adiciona a condição para excluir jogadores que já estão em grupos nesse torneio
             query += `
                 AND id NOT IN (
                     SELECT gp.playerId FROM group_players gp
@@ -347,25 +374,41 @@ app.get('/api/players', async (req: Request, res: Response) => {
         res.status(500).json({ error: 'Erro ao buscar jogadores' });
     }
 });
+// backend/src/server.ts -> Substitua esta rota
 app.post('/api/players', async (req: Request, res: Response) => {
     try {
-        const { fullName, cpf, email, password, gender } = req.body;
-        if (!fullName || !cpf || !email || !password || !gender) {
-            return res.status(400).json({ error: 'Todos os campos são obrigatórios.' });
+        // CPF e Handicap foram removidos
+        const { fullName, email, password, gender, modality, club } = req.body;
+        if (!fullName || !email || !password || !gender || !modality) {
+            return res.status(400).json({ error: 'Campos essenciais em falta.' });
         }
+
+        const saltRounds = 10;
+        const hashedPassword = await bcrypt.hash(password, saltRounds);
+
         const connection = await mysql.createConnection(dbConfig);
-        const query = 'INSERT INTO players (fullName, cpf, email, password, gender) VALUES (?, ?, ?, ?, ?)';
-        const [result]: any = await connection.execute(query, [fullName, cpf, email, password, gender]);
+
+        // Query atualizada sem CPF e handicap
+        const query = `
+            INSERT INTO players (fullName, email, password, gender, modality, club) 
+            VALUES (?, ?, ?, ?, ?, ?)
+        `;
+
+        const [result]: any = await connection.execute(query, [fullName, email, hashedPassword, gender, modality, club || null]);
+
         await connection.end();
+
         res.status(201).json({ id: result.insertId, ...req.body });
+
     } catch (error: any) {
         console.error('Erro ao cadastrar jogador:', error);
         if (error.code === 'ER_DUP_ENTRY') {
-            return res.status(409).json({ error: 'O Email ou CPF fornecido já está em uso.' });
+            return res.status(409).json({ error: 'O Email fornecido já está em uso.' });
         }
         res.status(500).json({ error: 'Erro ao cadastrar jogador.' });
     }
 });
+
 
 // --- ROTAS PARA GRUPOS (GROUPS) ---
 app.get('/api/tournaments/:tournamentId/groups', async (req: Request, res: Response) => {
@@ -375,11 +418,11 @@ app.get('/api/tournaments/:tournamentId/groups', async (req: Request, res: Respo
         const [groups]: any[] = await connection.execute('SELECT * FROM `groups` WHERE tournamentId = ?', [tournamentId]);
         for (const group of groups) {
             const [players] = await connection.execute(`
-                SELECT p.fullName, gp.isResponsible
-                FROM group_players gp
-                JOIN players p ON gp.playerId = p.id
-                WHERE gp.groupId = ?
-            `, [group.id]);
+            SELECT p.id, p.fullName, p.gender, gp.isResponsible, gp.teeColor
+            FROM group_players gp
+            JOIN players p ON gp.playerId = p.id
+            WHERE gp.groupId = ?
+        `, [group.id]);
             group.players = players;
         }
         await connection.end();
@@ -389,6 +432,7 @@ app.get('/api/tournaments/:tournamentId/groups', async (req: Request, res: Respo
         res.status(500).json({ error: 'Erro ao buscar grupos do torneio' });
     }
 });
+
 app.post('/api/groups', async (req: Request, res: Response) => {
     const pool = mysql.createPool(dbConfig);
     const connection = await pool.getConnection();
@@ -419,6 +463,77 @@ app.post('/api/groups', async (req: Request, res: Response) => {
         pool.end();
     }
 });
+// backend/src/server.ts -> ADICIONE ESTA NOVA ROTA
+
+// ROTA PARA BUSCAR OS DETALHES DE UM GRUPO ESPECÍFICO
+app.get('/api/groups/:id', async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const connection = await mysql.createConnection(dbConfig);
+        const [groupRows]: any[] = await connection.execute('SELECT * FROM `groups` WHERE id = ?', [id]);
+
+        if (groupRows.length === 0) {
+            await connection.end();
+            return res.status(404).json({ error: 'Grupo não encontrado.' });
+        }
+        const group = groupRows[0];
+
+        // Query corrigida para incluir o 'gender' do jogador, que será necessário no frontend
+        const [players] = await connection.execute(`
+            SELECT p.id, p.fullName, p.gender, gp.isResponsible, gp.teeColor
+            FROM group_players gp
+            JOIN players p ON gp.playerId = p.id
+            WHERE gp.groupId = ?
+        `, [group.id]);
+        group.players = players;
+
+        await connection.end();
+        res.json(group);
+    } catch (error) {
+        console.error('Erro ao buscar detalhes do grupo:', error);
+        res.status(500).json({ error: 'Erro ao buscar detalhes do grupo.' });
+    }
+});
+// backend/src/server.ts -> ADICIONE ESTA NOVA ROTA
+
+// ROTA PARA ATUALIZAR UM GRUPO
+app.put('/api/groups/:id', async (req: Request, res: Response) => {
+    const pool = mysql.createPool(dbConfig);
+    const connection = await pool.getConnection();
+    try {
+        const { id } = req.params;
+        const { startHole, players, responsiblePlayerId, category } = req.body;
+
+        await connection.beginTransaction();
+
+        // 1. Atualiza as informações básicas do grupo
+        await connection.execute(
+            'UPDATE `groups` SET startHole = ?, category = ? WHERE id = ?',
+            [startHole, category, id]
+        );
+
+        // 2. Apaga a lista antiga de jogadores do grupo
+        await connection.execute('DELETE FROM group_players WHERE groupId = ?', [id]);
+
+        // 3. Insere a nova lista de jogadores atualizada
+        for (const player of players) {
+            await connection.execute(
+                'INSERT INTO group_players (groupId, playerId, isResponsible, teeColor) VALUES (?, ?, ?, ?)',
+                [id, player.id, player.id === responsiblePlayerId, player.teeColor]
+            );
+        }
+
+        await connection.commit();
+        res.status(200).json({ message: 'Grupo atualizado com sucesso!' });
+    } catch (error) {
+        await connection.rollback();
+        console.error('Erro ao atualizar grupo:', error);
+        res.status(500).json({ error: 'Erro ao atualizar o grupo.' });
+    } finally {
+        connection.release();
+        pool.end();
+    }
+});
 app.delete('/api/groups/:id', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
@@ -431,6 +546,7 @@ app.delete('/api/groups/:id', async (req: Request, res: Response) => {
         res.status(500).json({ error: 'Erro ao apagar grupo.' });
     }
 });
+
 app.post('/api/groups/handicaps', async (req: Request, res: Response) => {
     try {
         const { groupId, handicaps } = req.body;
@@ -452,6 +568,7 @@ app.post('/api/groups/handicaps', async (req: Request, res: Response) => {
         res.status(500).json({ error: 'Erro ao atualizar handicaps.' });
     }
 });
+
 app.post('/api/groups/finish', async (req: Request, res: Response) => {
     try {
         const { groupId } = req.body;
@@ -468,32 +585,47 @@ app.post('/api/groups/finish', async (req: Request, res: Response) => {
     }
 });
 
-// --- ROTAS DE AUTENTICAÇÃO E SCORECARD ---
+// backend/src/server.ts -> Substitua esta rota
+
 app.post('/api/login', async (req: Request, res: Response) => {
     try {
         const { email, password } = req.body;
         if (!email || !password) {
-        return res.status(400).json({ error: 'Email e senha são obrigatórios.' });
+            return res.status(400).json({ error: 'Email e senha são obrigatórios.' });
         }
+
         const connection = await mysql.createConnection(dbConfig);
-        const query = 'SELECT id, fullName, email, cpf, role, gender FROM players WHERE email = ? AND password = ?';
-        const [rows]: any[] = await connection.execute(query, [email, password]);
+
+        // Incluímos 'modality' nos campos a serem retornados
+        const query = 'SELECT id, fullName, email, cpf, role, gender, modality, password FROM players WHERE email = ?';
+        const [rows]: any[] = await connection.execute(query, [email]);
+
         await connection.end();
-        if (rows.length > 0) {
-        const user = rows[0];
-        res.status(200).json({ user });
-        } else {
-        res.status(401).json({ error: 'Email ou senha inválidos.' });
+
+        if (rows.length === 0) {
+            return res.status(401).json({ error: 'Email ou senha inválidos.' });
         }
+
+        const user = rows[0];
+        const isMatch = await bcrypt.compare(password, user.password);
+
+        if (isMatch) {
+            const { password: _, ...userWithoutPassword } = user;
+            res.status(200).json({ user: userWithoutPassword });
+        } else {
+            res.status(401).json({ error: 'Email ou senha inválidos.' });
+        }
+
     } catch (error) {
         console.error('Erro no login:', error);
         res.status(500).json({ error: 'Erro interno no servidor.' });
     }
 });
+
 app.get('/api/scorecard/:accessCode', async (req: Request, res: Response) => {
     try {
         const { accessCode } = req.params;
-        const { playerId } = req.query; // Recebe o ID do jogador que está a aceder
+        const { playerId } = req.query;
 
         if (!playerId) {
             return res.status(400).json({ error: 'Player ID é obrigatório para aceder ao scorecard.' });
@@ -515,11 +647,10 @@ app.get('/api/scorecard/:accessCode', async (req: Request, res: Response) => {
 
         const group = groupDetails[0];
 
-        // --- BLOCO DE VERIFICAÇÃO DE PERMISSÃO ---
         const [userRole]: any[] = await connection.execute('SELECT role FROM players WHERE id = ?', [playerId]);
         const isAdmin = userRole.length > 0 && userRole[0].role === 'admin';
 
-        if (!isAdmin) { // Se não for admin, verifica se pertence ao grupo
+        if (!isAdmin) {
             const [playersInGroup]: any[] = await connection.execute(
                 'SELECT playerId FROM group_players WHERE groupId = ?',
                 [group.groupId]
@@ -531,7 +662,6 @@ app.get('/api/scorecard/:accessCode', async (req: Request, res: Response) => {
                 return res.status(403).json({ error: 'Acesso negado: você não pertence a este grupo.' });
             }
         }
-        // --- FIM DO BLOCO DE VERIFICAÇÃO ---
 
         const [players] = await connection.execute(`
             SELECT p.id, p.fullName, gp.teeColor
@@ -548,40 +678,12 @@ app.get('/api/scorecard/:accessCode', async (req: Request, res: Response) => {
             hole.tees = tees;
         }
         group.holes = holes;
-
+        
         await connection.end();
         res.json(group);
     } catch (error) {
         console.error('Erro ao buscar dados do scorecard:', error);
         res.status(500).json({ error: 'Erro ao buscar dados do scorecard.' });
-    }
-});
-app.post('/api/scores/hole', async (req: Request, res: Response) => {
-    const { groupId, holeNumber, scores } = req.body;
-    if (!groupId || !holeNumber || !scores) {
-        return res.status(400).json({ error: 'Dados incompletos.' });
-    }
-    const pool = mysql.createPool(dbConfig);
-    const connection = await pool.getConnection();
-    try {
-        await connection.beginTransaction();
-        for (const score of scores) {
-            const query = `
-                INSERT INTO scores (groupId, playerId, holeNumber, strokes)
-                VALUES (?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE strokes = ?
-            `;
-            await connection.execute(query, [groupId, score.playerId, holeNumber, score.strokes, score.strokes]);
-        }
-        await connection.commit();
-        res.status(200).json({ message: 'Pontuações do buraco salvas com sucesso.' });
-    } catch (error) {
-        await connection.rollback();
-        console.error('Erro ao salvar pontuações do buraco:', error);
-        res.status(500).json({ error: 'Erro ao salvar pontuações.' });
-    } finally {
-        connection.release();
-        pool.end();
     }
 });
 
@@ -634,6 +736,7 @@ app.get('/api/leaderboard/:tournamentId', async (req: Request, res: Response) =>
         res.status(500).json({ error: 'Erro ao calcular leaderboard.' });
     }
 });
+
 app.get('/api/history/player/:playerId', async (req: Request, res: Response) => {
     try {
         const { playerId } = req.params;
@@ -654,6 +757,7 @@ app.get('/api/history/player/:playerId', async (req: Request, res: Response) => 
         res.status(500).json({ error: 'Erro ao buscar histórico.' });
     }
 });
+
 app.get('/api/history/player/:playerId/tournament/:tournamentId', async (req: Request, res: Response) => {
     try {
         const { playerId, tournamentId } = req.params;
@@ -945,7 +1049,314 @@ app.get('/api/players/:playerId/stats', async (req: Request, res: Response) => {
         res.status(500).json({ error: 'Erro ao buscar estatísticas.' });
     }
 });
+// --- ROTAS PARA REDEFINIÇÃO DE SENHA ---
 
+// ROTA 1: PEDIDO DE REDEFINIÇÃO DE SENHA (POST /api/forgot-password)
+app.post('/api/forgot-password', async (req: Request, res: Response) => {
+    const { email } = req.body;
+
+    try {
+        const connection = await mysql.createConnection(dbConfig);
+        
+        // Procura o utilizador pelo email
+        const [rows]: any[] = await connection.execute('SELECT * FROM players WHERE email = ?', [email]);
+        
+        if (rows.length === 0) {
+            // Por segurança, não informamos se o email existe ou não.
+            return res.status(200).json({ message: 'Se o seu email estiver em nossa base de dados, você receberá um link para redefinir sua senha.' });
+        }
+        
+        const user = rows[0];
+
+        // Gera um token seguro e aleatório
+        const token = crypto.randomBytes(20).toString('hex');
+        
+        // Define a data de expiração do token (ex: 1 hora a partir de agora)
+        const expires = new Date(Date.now() + 3600000); // 1 hora em milissegundos
+
+        // Salva o token e a data de expiração no banco de dados para este utilizador
+        await connection.execute(
+            'UPDATE players SET resetPasswordToken = ?, resetPasswordExpires = ? WHERE id = ?',
+            [token, expires, user.id]
+        );
+
+        await connection.end();
+
+        // --- Configuração do Nodemailer ---
+        // SUBSTITUA COM AS SUAS CREDENCIAIS DE EMAIL
+        const transporter = nodemailer.createTransport({
+            service: 'gmail', // ou outro serviço como 'hotmail', 'yahoo', etc.
+            auth: {
+                user: 'suporte.birdify@gmail.com', // O seu endereço de email
+                pass: 'frez leiz fior vrvq'     // A sua senha de app gerada
+            }
+        });
+
+        const mailOptions = {
+            to: user.email,
+            from: 'Birdify <suporte.birdify@gmail.com>',
+            subject: 'Redefinição de Senha - Birdify',
+            text: `Você está recebendo este email porque você (ou outra pessoa) solicitou a redefinição da sua senha.\n\n` +
+                  `Por favor, clique no link a seguir ou cole-o no seu navegador para completar o processo:\n\n` +
+                  `http://localhost:5173/reset/${token}\n\n` + // NOTA: Em produção, mude 'localhost:3000' para o URL do seu site
+                  `Se você não solicitou isso, por favor, ignore este email e sua senha permanecerá inalterada.\n`
+        };
+
+        await transporter.sendMail(mailOptions);
+
+        res.status(200).json({ message: 'Um email foi enviado com as instruções para redefinir a sua senha.' });
+
+    } catch (error) {
+        console.error('Erro em forgot-password:', error);
+        res.status(500).json({ error: 'Erro ao processar o pedido de redefinição de senha.' });
+    }
+});
+
+
+// ROTA 2: REDEFINIR A SENHA (POST /api/reset-password)
+app.post('/api/reset-password', async (req: Request, res: Response) => {
+    const { token, password } = req.body;
+
+    try {
+        const connection = await mysql.createConnection(dbConfig);
+        
+        // Procura um utilizador com o token válido e que não tenha expirado
+        const [rows]: any[] = await connection.execute(
+            'SELECT * FROM players WHERE resetPasswordToken = ? AND resetPasswordExpires > NOW()',
+            [token]
+        );
+
+        if (rows.length === 0) {
+            return res.status(400).json({ error: 'O token para redefinição de senha é inválido ou expirou.' });
+        }
+
+        const user = rows[0];
+
+        // A nova senha precisa de ser "hasheada" antes de ser guardada
+        const saltRounds = 10;
+        const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+        // Atualiza a senha e limpa os campos de redefinição
+        await connection.execute(
+            'UPDATE players SET password = ?, resetPasswordToken = NULL, resetPasswordExpires = NULL WHERE id = ?',
+            [hashedPassword, user.id]
+        );
+        
+        await connection.end();
+
+        res.status(200).json({ message: 'Sua senha foi redefinida com sucesso!' });
+
+    } catch (error) {
+        console.error('Erro em reset-password:', error);
+        res.status(500).json({ error: 'Erro ao redefinir a senha.' });
+    }
+});
+
+app.delete('/api/users/me', async (req: Request, res: Response) => {
+
+    const { userId } = req.body;
+    if (!userId) {
+        return res.status(400).json({ error: 'ID do utilizador é obrigatório.' });
+    }
+
+    const connection = await mysql.createConnection(dbConfig);
+    try {
+        await connection.beginTransaction();
+
+        
+        await connection.execute('DELETE FROM group_players WHERE playerId = ?', [userId]);
+
+       
+        await connection.execute('DELETE FROM scores WHERE playerId = ?', [userId]);
+
+        // Finalmente, apaga o jogador
+        await connection.execute('DELETE FROM players WHERE id = ?', [userId]);
+
+        await connection.commit();
+        await connection.end();
+
+        res.status(200).json({ message: 'Conta apagada com sucesso.' });
+    } catch (error) {
+        await connection.rollback();
+        await connection.end();
+        console.error('Erro ao apagar conta:', error);
+        res.status(500).json({ error: 'Erro ao apagar a conta.' });
+    }
+});
+// backend/src/server.ts - Adicionar esta rota
+
+// ROTA PARA ATUALIZAR OS DADOS DO PRÓPRIO UTILIZADOR
+app.put('/api/users/me', async (req: Request, res: Response) => {
+    // NOTA DE SEGURANÇA: Num sistema com JWT, o userId viria do token decifrado, não do corpo do pedido.
+    const { userId, fullName } = req.body;
+    if (!userId || !fullName) {
+        return res.status(400).json({ error: 'ID do utilizador e nome são obrigatórios.' });
+    }
+
+    try {
+        const connection = await mysql.createConnection(dbConfig);
+        await connection.execute('UPDATE players SET fullName = ? WHERE id = ?', [fullName, userId]);
+        await connection.end();
+        res.status(200).json({ message: 'Perfil atualizado com sucesso.' });
+    } catch (error) {
+        console.error('Erro ao atualizar perfil:', error);
+        res.status(500).json({ error: 'Erro ao atualizar o perfil.' });
+    }
+});
+// backend/src/server.ts - Adicionar esta rota
+
+// ROTA PARA SALVAR AS PONTUAÇÕES DE UM BURACO ESPECÍFICO
+app.post('/api/scores/hole', async (req: Request, res: Response) => {
+    const { groupId, holeNumber, scores } = req.body;
+
+    // Validação para garantir que todos os dados necessários foram enviados
+    if (!groupId || !holeNumber || !scores || !Array.isArray(scores)) {
+        return res.status(400).json({ error: 'Dados incompletos ou em formato inválido.' });
+    }
+
+    const pool = mysql.createPool(dbConfig);
+    const connection = await pool.getConnection();
+
+    try {
+        await connection.beginTransaction();
+
+        for (const score of scores) {
+            // Ignora jogadores que não têm uma pontuação definida para este buraco
+            if (score.strokes === null || score.strokes === undefined) {
+                continue;
+            }
+
+            const query = `
+                INSERT INTO scores (groupId, playerId, holeNumber, strokes)
+                VALUES (?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE strokes = ?
+            `;
+            await connection.execute(query, [groupId, score.playerId, holeNumber, score.strokes, score.strokes]);
+        }
+
+        await connection.commit();
+        res.status(200).json({ message: 'Pontuações do buraco salvas com sucesso.' });
+    } catch (error) {
+        await connection.rollback();
+        console.error('Erro ao salvar pontuações do buraco:', error);
+        res.status(500).json({ error: 'Erro no servidor ao salvar pontuações.' });
+    } finally {
+        connection.release();
+        pool.end();
+    }
+});
+// backend/src/server.ts -> Adicione esta nova rota
+
+// ROTA PARA BUSCAR OS CLUBES PARCEIROS
+app.get('/api/clubs', async (req: Request, res: Response) => {
+    try {
+        const { modality } = req.query; // Filtra por modalidade
+        if (!modality) {
+            return res.status(400).json({ error: 'Modalidade é obrigatória.' });
+        }
+
+        const connection = await mysql.createConnection(dbConfig);
+
+        // Busca clubes da modalidade específica ou clubes de ambas ('Both')
+        const [rows] = await connection.execute(
+            "SELECT name FROM partner_clubs WHERE modality = ? OR modality = 'Both' ORDER BY name ASC",
+            [modality]
+        );
+
+        await connection.end();
+        res.json(rows);
+    } catch (error) {
+        console.error('Erro ao buscar clubes:', error);
+        res.status(500).json({ error: 'Erro ao buscar clubes.' });
+    }
+});
+// backend/src/server.ts -> Adicionar este bloco de código
+
+// --- ROTAS PARA EDIÇÃO ---
+
+// ROTA PARA BUSCAR OS DETALHES DE UM CAMPO ESPECÍFICO
+app.get('/api/courses/:id', async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const connection = await mysql.createConnection(dbConfig);
+        const [courseRows]: any[] = await connection.execute('SELECT * FROM courses WHERE id = ?', [id]);
+        if (courseRows.length === 0) {
+            await connection.end();
+            return res.status(404).json({ error: 'Campo não encontrado.' });
+        }
+        res.json(courseRows[0]);
+    } catch (error) {
+        console.error('Erro ao buscar detalhes do campo:', error);
+        res.status(500).json({ error: 'Erro ao buscar detalhes do campo' });
+    }
+});
+
+// backend/src/server.ts -> ADICIONE ESTE BLOCO DE CÓDIGO
+
+// ROTA PARA BUSCAR OS DETALHES COMPLETOS DE UM CAMPO (COM BURACOS E TEES)
+app.get('/api/courses/:id/details', async (req: Request, res: Response) => {
+    const { id } = req.params;
+    const connection = await mysql.createConnection(dbConfig);
+    try {
+        const [courseRows]: any[] = await connection.execute('SELECT * FROM courses WHERE id = ?', [id]);
+        if (courseRows.length === 0) {
+            await connection.end();
+            return res.status(404).json({ error: 'Campo não encontrado.' });
+        }
+        const course = courseRows[0];
+
+        const [holes]: any[] = await connection.execute('SELECT * FROM holes WHERE courseId = ? ORDER BY holeNumber ASC', [id]);
+        
+        for (const hole of holes) {
+            const [tees] = await connection.execute('SELECT * FROM tees WHERE holeId = ?', [hole.id]);
+            hole.tees = tees;
+        }
+
+        course.holes = holes;
+        await connection.end();
+        res.json(course);
+    } catch (error) {
+        await connection.end();
+        console.error('Erro ao buscar detalhes completos do campo:', error);
+        res.status(500).json({ error: 'Erro ao buscar detalhes do campo' });
+    }
+});
+
+// ROTA PARA ATUALIZAR UM CAMPO E SEUS BURACOS/TEES
+app.put('/api/courses/:id/details', async (req: Request, res: Response) => {
+    const pool = mysql.createPool(dbConfig);
+    const connection = await pool.getConnection();
+    try {
+        const { id } = req.params;
+        const { name, location, holes } = req.body;
+
+        await connection.beginTransaction();
+
+        // 1. Atualiza as informações básicas do campo
+        await connection.execute('UPDATE courses SET name = ?, location = ? WHERE id = ?', [name, location, id]);
+
+        // 2. Itera sobre cada buraco para atualizar par e tees
+        for (const holeData of holes) {
+            // Atualiza o par do buraco
+            await connection.execute('UPDATE holes SET par = ? WHERE id = ? AND courseId = ?', [holeData.par, holeData.id, id]);
+
+            // Atualiza as jardas de cada tee
+            for (const teeData of holeData.tees) {
+                 await connection.execute('UPDATE tees SET yardage = ? WHERE id = ? AND holeId = ?', [teeData.yardage, teeData.id, holeData.id]);
+            }
+        }
+
+        await connection.commit();
+        res.status(200).json({ message: 'Campo atualizado com sucesso.' });
+    } catch (error) {
+        await connection.rollback();
+        console.error('Erro ao atualizar campo:', error);
+        res.status(500).json({ error: 'Erro ao atualizar o campo.' });
+    } finally {
+        connection.release();
+        pool.end();
+    }
+});
 app.listen(port, () => {
   console.log(`🚀 Servidor backend rodando em http://localhost:${port}`);
 });

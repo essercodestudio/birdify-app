@@ -1,15 +1,17 @@
-// components/admin/ManageTournaments.tsx - ATUALIZADO
+// components/admin/ManageTournaments.tsx - VERSÃO CORRIGIDA
 
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { AdminCourse } from '../../data/mockDatabase';
 import Button from '../Button';
+import { User } from '../../types'; // Importe o tipo User
 
 interface ManageTournamentsProps {
   courses: AdminCourse[];
+  adminUser: User | null; // <<< ALTERAÇÃO IMPORTANTE: Recebe o utilizador admin
 }
 
-const ManageTournaments: React.FC<ManageTournamentsProps> = ({ courses }) => {
+const ManageTournaments: React.FC<ManageTournamentsProps> = ({ courses, adminUser }) => {
   const [tournaments, setTournaments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [newTournamentName, setNewTournamentName] = useState('');
@@ -18,8 +20,12 @@ const ManageTournaments: React.FC<ManageTournamentsProps> = ({ courses }) => {
   const [selectedCourseId, setSelectedCourseId] = useState('');
 
   const fetchTournaments = async () => {
+    if (!adminUser) return; // Não faz nada se não houver admin logado
     try {
-      const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/tournaments`);
+      // Busca apenas torneios criados por este admin
+      const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/tournaments`, {
+          params: { adminId: adminUser.id }
+      });
       setTournaments(response.data);
     } catch (error) {
       console.error("Erro ao buscar torneios", error);
@@ -30,16 +36,17 @@ const ManageTournaments: React.FC<ManageTournamentsProps> = ({ courses }) => {
 
   useEffect(() => {
     fetchTournaments();
-  }, []);
+  }, [adminUser]); // Executa a busca sempre que o adminUser mudar
 
   const handleCreateTournament = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (newTournamentName.trim() && newTournamentDate && selectedCourseId && newTournamentTime) {
+    if (newTournamentName.trim() && newTournamentDate && selectedCourseId && newTournamentTime && adminUser) {
       const newTournamentData = {
         name: newTournamentName,
         date: newTournamentDate,
         courseId: parseInt(selectedCourseId, 10),
         startTime: newTournamentTime,
+        adminId: adminUser.id, // <<< ALTERAÇÃO IMPORTANTE: Adiciona o ID do admin
       };
       try {
         await axios.post(`${import.meta.env.VITE_API_URL}/api/tournaments`, newTournamentData);
@@ -47,7 +54,7 @@ const ManageTournaments: React.FC<ManageTournamentsProps> = ({ courses }) => {
         setNewTournamentDate('');
         setNewTournamentTime('08:30');
         setSelectedCourseId('');
-        fetchTournaments();
+        fetchTournaments(); // Atualiza a lista de torneios
       } catch (error) {
         alert('Falha ao criar o torneio.');
         console.error(error);

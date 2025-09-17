@@ -1,4 +1,4 @@
-// screens/LeaderboardScreen.tsx - ATUALIZADO
+// screens/LeaderboardScreen.tsx - VERSÃO ATUALIZADA COM MODALIDADE
 
 import React, { useState, useEffect, useMemo, useCallback, useContext } from 'react';
 import axios from 'axios';
@@ -28,6 +28,9 @@ const LeaderboardScreen: React.FC<LeaderboardScreenProps> = ({ tournamentId, onB
   const [viewMode, setViewMode] = useState<ViewMode>('Gross');
   const [category, setCategory] = useState<Category>('Male');
   const [selectedPlayer, setSelectedPlayer] = useState<any | null>(null);
+  
+  // Determina a modalidade a partir do utilizador logado. O padrão é 'Golf'.
+  const modality = useMemo(() => user?.modality || 'Golf', [user]);
 
   const fetchLeaderboard = useCallback(async () => { 
     try {
@@ -84,7 +87,8 @@ const LeaderboardScreen: React.FC<LeaderboardScreenProps> = ({ tournamentId, onB
             <Button onClick={onBack} variant="secondary" size="icon" className="mr-4">
                 <ChevronLeftIcon className="h-6 w-6" />
             </Button>
-            <h1 className="text-3xl font-bold text-white">Leaderboard ao Vivo</h1>
+            {/* TÍTULO DINÂMICO BASEADO NA MODALIDADE */}
+            <h1 className="text-3xl font-bold text-white">Leaderboard de {modality}</h1>
         </div>
         {user?.role === 'admin' && (
             <Button onClick={handleExport}>
@@ -109,7 +113,10 @@ const LeaderboardScreen: React.FC<LeaderboardScreenProps> = ({ tournamentId, onB
               <th className="px-3 py-3 text-left text-xs font-medium text-gray-300 uppercase">Pos</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase">Nome</th>
               <th className="px-3 py-3 text-center text-xs font-medium text-gray-300 uppercase">Hole</th>
-              <th className="px-3 py-3 text-center text-xs font-medium text-gray-300 uppercase">Kicks</th>
+              {/* CABEÇALHO DA COLUNA DINÂMICO */}
+              <th className="px-3 py-3 text-center text-xs font-medium text-gray-300 uppercase">
+                {modality === 'Footgolf' ? 'Kicks' : 'Strokes'}
+              </th>
               <th className="px-3 py-3 text-center text-xs font-medium text-gray-300 uppercase">Par</th>
             </tr>
           </thead>
