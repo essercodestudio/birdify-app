@@ -1,4 +1,4 @@
-// components/admin/ManageCourses.tsx - VERSÃO FINAL E COMPLETA COM EDIÇÃO
+// components/admin/ManageGroups.tsx - VERSÃO FINAL (LIGAÇÃO COM JOGADORES CONFIRMADOS)
 
 import React, { useState, useEffect, useMemo } from "react";
 import axios from "axios";
@@ -46,11 +46,13 @@ const ManageGroups: React.FC = () => {
     fetchTournaments();
   }, []);
 
+  // <<< FUNÇÃO ATUALIZADA >>>
   const fetchTournamentData = async (tournamentId: string) => {
     if (tournamentId) {
       try {
+        // Agora busca os jogadores da rota de confirmados e as outras informações
         const [playersRes, groupsRes, teesRes] = await Promise.all([
-          axios.get(`${import.meta.env.VITE_API_URL}/api/players?tournamentId=${tournamentId}`),
+          axios.get(`${import.meta.env.VITE_API_URL}/api/tournaments/${tournamentId}/confirmed-players`),
           axios.get(`${import.meta.env.VITE_API_URL}/api/tournaments/${tournamentId}/groups`),
           axios.get(`${import.meta.env.VITE_API_URL}/api/tournaments/${tournamentId}/tees`),
         ]);
@@ -59,8 +61,13 @@ const ManageGroups: React.FC = () => {
         setAvailableTees(teesRes.data);
       } catch (error) {
         console.error("Erro ao buscar dados do torneio", error);
+        // Limpa os dados em caso de erro para evitar inconsistências
+        setAvailablePlayers([]);
+        setGroups([]);
+        setAvailableTees([]);
       }
     } else {
+      // Limpa os dados se nenhum torneio for selecionado
       setAvailablePlayers([]);
       setGroups([]);
       setAvailableTees([]);
@@ -98,7 +105,7 @@ const ManageGroups: React.FC = () => {
   }, [availablePlayers, groupCategory, searchTerm]);
 
   const handlePlayerSelectionChange = (playerId: string, field: "teeColor", value: string) => {
-    setSelectedPlayers((prev) => ({ ...prev, [playerId]: { ...prev[playerId], [field]: value } }));
+    setSelectedPlayers((prev) => ({ ...prev, [playerId]: { ...prev[playerId], id: playerId, [field]: value } }));
   };
 
   const handlePlayerToggle = (player: AdminPlayer) => {
@@ -150,12 +157,12 @@ const ManageGroups: React.FC = () => {
     }
   };
 
-  // --- FUNÇÕES PARA O MODAL DE EDIÇÃO ---
   const handleOpenEditModal = async (groupId: number) => {
     try {
         const [groupRes, playersRes] = await Promise.all([
             axios.get(`${import.meta.env.VITE_API_URL}/api/groups/${groupId}`),
-            axios.get(`${import.meta.env.VITE_API_URL}/api/players?tournamentId=${selectedTournamentId}`)
+            // Na edição, buscamos os jogadores confirmados para adicionar ao grupo
+            axios.get(`${import.meta.env.VITE_API_URL}/api/tournaments/${selectedTournamentId}/confirmed-players`)
         ]);
         
         const groupData = groupRes.data;
@@ -266,7 +273,7 @@ const ManageGroups: React.FC = () => {
           </div>
 
           <form onSubmit={handleCreateGroup} className="p-6 bg-gray-700/50 rounded-lg space-y-6">
-            <h3 className="text-lg font-bold text-green-400">2. Criar Novo Grupo</h3>
+            <h3 className="text-lg font-bold text-green-400">2. Criar Novo Grupo (Apenas Jogadores com Pagamento Confirmado)</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label htmlFor="groupCategory" className="block text-sm font-medium text-gray-300 mb-1">Categoria</label>
@@ -302,7 +309,8 @@ const ManageGroups: React.FC = () => {
                     )}
                   </div>
                 ))}
-                 {filteredPlayers.length === 0 && (<p className="text-gray-400 text-center py-4">Nenhum jogador encontrado para esta categoria ou pesquisa.</p>)}
+                 {availablePlayers.length === 0 && (<p className="text-gray-400 text-center py-4">Nenhum jogador com pagamento confirmado encontrado.</p>)}
+                 {filteredPlayers.length === 0 && availablePlayers.length > 0 && (<p className="text-gray-400 text-center py-4">Nenhum jogador encontrado para a sua pesquisa.</p>)}
               </div>
             </div>
             <Button type="submit">Criar Grupo</Button>
@@ -334,7 +342,9 @@ const ManageGroups: React.FC = () => {
                         <label className="block text-sm font-medium text-gray-300 mb-2">Jogadores</label>
                         <input type="text" placeholder="Buscar por nome..." value={editSearchTerm} onChange={e => setEditSearchTerm(e.target.value)} className="w-full mb-2 px-3 py-2 border border-gray-600 bg-gray-900 text-white rounded-md"/>
                         <div className="space-y-2 max-h-60 overflow-y-auto border border-gray-700 p-2 rounded-md">
-                            {editingGroup.availablePlayersForEdit.filter((p: any) => p.gender === editingGroup.category && p.fullName.toLowerCase().includes(editSearchTerm.toLowerCase())).map((player: any) => (
+                            {editingGroup.availablePlayersForEdit
+                               .filter((p: any) => p.gender === editingGroup.category && p.fullName.toLowerCase().includes(editSearchTerm.toLowerCase()))
+                               .map((player: any) => (
                                 <div key={player.id} className="p-3 bg-gray-700 rounded-lg">
                                     <div className="flex items-center">
                                         <input type="checkbox" id={`edit-cb-${player.id}`} checked={!!editingGroup.selectedPlayers[player.id]} onChange={() => handleEditingPlayerToggle(player)} className="h-4 w-4"/>

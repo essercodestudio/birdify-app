@@ -1,4 +1,4 @@
-// screens/MainScreen.tsx - VERSÃO FINAL COM PERSISTÊNCIA E FILTRO DE MODALIDADE
+// screens/MainScreen.tsx - VERSÃO COMPLETA E CORRIGIDA
 
 import React, { useState, useContext, useCallback, useEffect } from "react";
 import axios from "axios";
@@ -12,30 +12,37 @@ import PlayerStatsScreen from "./PlayerStatsScreen";
 import Button from "../components/Button";
 import Spinner from "../components/Spinner";
 import ProfileScreen from "./ProfileScreen";
+import TrainingScreen from "./TrainingScreen";
 
 type Screen =
   | "HOME"
   | "LEADERBOARD"
   | "SCORECARD"
-  | "ADMIN_DASHBOARD"
   | "HANDICAP"
   | "SELECT_LEADERBOARD"
   | "HISTORY"
   | "STATS"
-  | "PROFILE";
+  | "PROFILE"
+  | "ADMIN_DASHBOARD"
+  | "TRAINING"
+  | "HANDICAP_TRAINING"
+  | "SCORECARD_TRAINING";
 
 const MainScreen: React.FC = () => {
-    const { user, logout } = useContext(AuthContext);
+    const { user } = useContext(AuthContext);
+    const [screen, setScreen] = useState<Screen>('HOME');
+    const [accessCode, setAccessCode] = useState(() => localStorage.getItem('activeAccessCode') || '');
+    const [selectedTournamentId, setSelectedTournamentId] = useState<string | null>(() => localStorage.getItem('selectedTournamentId') || null);
+    const [error, setError] = useState("");
+    const [tournaments, setTournaments] = useState<any[]>([]);
+    const [loading, setLoading] = useState(false);
 
-    const [screen, setScreen] = useState<Screen>(() => {
-        return (localStorage.getItem('activeScreen') as Screen) || 'HOME';
-    });
-    const [accessCode, setAccessCode] = useState(() => {
-        return localStorage.getItem('activeAccessCode') || '';
-    });
-    const [selectedTournamentId, setSelectedTournamentId] = useState<string | null>(() => {
-        return localStorage.getItem('selectedTournamentId') || null;
-    });
+    useEffect(() => {
+        const activeScreen = localStorage.getItem('activeScreen') as Screen;
+        if (activeScreen && activeScreen !== 'HOME') {
+            setScreen(activeScreen);
+        }
+    }, []);
 
     useEffect(() => {
         if (screen !== 'HOME') {
@@ -49,23 +56,23 @@ const MainScreen: React.FC = () => {
         }
     }, [screen, accessCode, selectedTournamentId]);
 
-    const [error, setError] = useState("");
-    const [tournaments, setTournaments] = useState<any[]>([]);
-    const [loading, setLoading] = useState(false);
+    const handleBackToHome = useCallback(() => {
+        setScreen("HOME");
+        setAccessCode("");
+        setError("");
+        setSelectedTournamentId(null);
+    }, []);
 
     const handleSelectLeaderboard = async () => {
-        // <<< INÍCIO DA ALTERAÇÃO >>>
-        if (!user) return; // Garante que temos um utilizador para saber a sua modalidade
+        if (!user) return;
         setLoading(true);
         try {
-            // Adiciona o parâmetro 'modality' à chamada da API
             const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/tournaments`, {
                 params: {
                     status: 'active',
-                    modality: user.modality // Envia a modalidade do utilizador logado
+                    modality: user.modality
                 }
             });
-            // <<< FIM DA ALTERAÇÃO >>>
             setTournaments(response.data);
             setScreen("SELECT_LEADERBOARD");
         } catch (err) {
@@ -83,38 +90,46 @@ const MainScreen: React.FC = () => {
     const handleStartScoring = useCallback(() => {
         if (accessCode.trim()) {
             setError("");
-            localStorage.setItem('activeAccessCode', accessCode); // Guarda o código aqui
+            localStorage.setItem('activeAccessCode', accessCode);
             setScreen("HANDICAP");
         } else {
             setError("Por favor, insira um código de acesso válido.");
         }
     }, [accessCode]);
 
-    const handleBackToHome = useCallback(() => {
-        setScreen("HOME");
-        setAccessCode("");
-        setError("");
-        setSelectedTournamentId(null);
-    }, []);
-
     const handleHandicapsSubmitted = useCallback(() => {
         setScreen("SCORECARD");
     }, []);
 
-    const handleDeleteAccount = async () => {
-        if (window.confirm('Tem a certeza de que quer apagar a sua conta? Esta ação é irreversível.')) {
-            try {
-                await axios.delete(`${import.meta.env.VITE_API_URL}/api/users/me`, { data: { userId: user!.id } });
-                alert('A sua conta foi apagada com sucesso.');
-                logout();
-            } catch (error) {
-                alert('Não foi possível apagar a sua conta.');
-            }
-        }
-    };
+    const handleStartTrainingScoring = useCallback((code: string) => {
+        setAccessCode(code);
+        setScreen("HANDICAP_TRAINING");
+    }, []);
+
+    const handleTrainingHandicapsSubmitted = useCallback(() => {
+        setScreen("SCORECARD_TRAINING");
+    }, []);
     
     if (!user) return null;
-
+    
+    if (screen === "TRAINING") {
+        return <TrainingScreen onBack={handleBackToHome} onStartScoring={handleStartTrainingScoring} />;
+    }
+    if (screen === "HANDICAP") {
+        return (<HandicapScreen accessCode={accessCode} onHandicapsSubmitted={handleHandicapsSubmitted} user={user} type="tournament" />);
+    }
+    if (screen === "SCORECARD") {
+        return (<ScorecardScreen accessCode={accessCode} onBack={handleBackToHome} type="tournament"/>);
+    }
+    if (screen === "HANDICAP_TRAINING") {
+        return (<HandicapScreen accessCode={accessCode} onHandicapsSubmitted={handleTrainingHandicapsSubmitted} user={user} type="training" />);
+    }
+    if (screen === "SCORECARD_TRAINING") {
+        return (<ScorecardScreen accessCode={accessCode} onBack={handleBackToHome} type="training"/>);
+    }
+    if (screen === "ADMIN_DASHBOARD") {
+        return <AdminDashboardScreen onBack={handleBackToHome} />;
+    }
     if (screen === "PROFILE") {
         return <ProfileScreen onBack={handleBackToHome} />;
     }
@@ -144,17 +159,7 @@ const MainScreen: React.FC = () => {
             </div>
         );
     }
-    if (screen === "HANDICAP" && accessCode) {
-        return (<HandicapScreen accessCode={accessCode} onHandicapsSubmitted={handleHandicapsSubmitted} user={user} />);
-    }
-    if (screen === "SCORECARD" && accessCode) {
-        return (<ScorecardScreen accessCode={accessCode} onBack={handleBackToHome} />);
-    }
-    if (screen === "ADMIN_DASHBOARD") {
-        return <AdminDashboardScreen onBack={handleBackToHome} />;
-    }
-
-    // Ecrã HOME (inicial)
+    
     return (
         <div className="space-y-8">
             <div className="p-6 bg-gray-800 rounded-lg shadow-lg text-center">
@@ -162,9 +167,9 @@ const MainScreen: React.FC = () => {
                 <p className="text-gray-400 mt-2">Modalidade: <span className="font-bold text-green-400">{user.modality}</span></p>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                <div className="p-6 bg-gray-800 rounded-lg shadow-lg">
-                    <h2 className="text-2xl font-bold text-green-400 mb-4">Marcar Pontuação</h2>
-                    <p className="text-gray-300 mb-4">Insira o código de acesso para começar a marcar.</p>
+                 <div className="p-6 bg-gray-800 rounded-lg shadow-lg">
+                    <h2 className="text-2xl font-bold text-green-400 mb-4">Marcar Pontuação (Torneio)</h2>
+                    <p className="text-gray-300 mb-4">Insira o código de acesso para um torneio oficial.</p>
                     <div className="flex flex-col sm:flex-row gap-2">
                         <input type="text" placeholder="Código de Acesso" value={accessCode} onChange={(e) => setAccessCode(e.target.value.toUpperCase())} className="flex-grow px-3 py-2 border border-gray-700 bg-gray-900 text-white rounded-md" />
                         <Button onClick={handleStartScoring} className="w-full sm:w-auto">Iniciar</Button>
@@ -172,8 +177,15 @@ const MainScreen: React.FC = () => {
                     {error && <p className="text-red-400 mt-2 text-sm">{error}</p>}
                 </div>
                 <div className="p-6 bg-gray-800 rounded-lg shadow-lg">
-                    <h2 className="text-2xl font-bold text-green-400 mb-4">Ver Leaderboard</h2>
-                    <p className="text-gray-300 mb-4">Confira a classificação dos torneios.</p>
+                    <h2 className="text-2xl font-bold text-green-400 mb-4">Treino</h2>
+                    <p className="text-gray-300 mb-4">Crie, participe e registe as suas sessões de treino.</p>
+                    <Button onClick={() => setScreen("TRAINING")} className="w-full sm:w-auto">
+                        Aceder à Área de Treino
+                    </Button>
+                </div>
+                <div className="p-6 bg-gray-800 rounded-lg shadow-lg">
+                    <h2 className="text-2xl font-bold text-green-400 mb-4">Leaderboard de Torneios</h2>
+                    <p className="text-gray-300 mb-4">Confira a classificação dos eventos oficiais.</p>
                     <Button onClick={handleSelectLeaderboard} className="w-full sm:w-auto">Ver Leaderboards</Button>
                 </div>
                 <div className="p-6 bg-gray-800 rounded-lg shadow-lg">
@@ -183,19 +195,19 @@ const MainScreen: React.FC = () => {
                 </div>
                 <div className="p-6 bg-gray-800 rounded-lg shadow-lg">
                     <h2 className="text-2xl font-bold text-green-400 mb-4">Minhas Estatísticas</h2>
-                    <p className="text-gray-300 mb-4">Analise seu desempenho geral no golfe.</p>
+                    <p className="text-gray-300 mb-4">Analise seu desempenho geral.</p>
                     <Button onClick={() => setScreen("STATS")} className="w-full sm:w-auto">Ver Estatísticas</Button>
                 </div>
                 {user?.role === "admin" && (
                     <div className="p-6 bg-gray-800 rounded-lg shadow-lg">
                         <h2 className="text-2xl font-bold text-green-400 mb-4">Painel do Administrador</h2>
                         <p className="text-gray-300 mb-4">Gerencie campos, torneios e grupos.</p>
-                        <Button onClick={() => setScreen("ADMIN_DASHBOARD")}>Acessar Painel</Button>
+                        <Button onClick={() => setScreen('ADMIN_DASHBOARD')}>Acessar Painel</Button>
                     </div>
                 )}
                 <div className="p-6 bg-gray-800 rounded-lg shadow-lg">
                     <h2 className="text-2xl font-bold text-green-400 mb-4">Meu Perfil</h2>
-                    <p className="text-gray-300 mb-4">Veja e edite as suas informações ou gira a sua conta.</p>
+                    <p className="text-gray-300 mb-4">Edite as suas informações ou gira a sua conta.</p>
                     <Button onClick={() => setScreen("PROFILE")} className="w-full sm:w-auto">Aceder ao Perfil</Button>
                 </div>
             </div>

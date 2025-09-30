@@ -1,4 +1,4 @@
-// screens/ScorecardScreen.tsx - VERSÃO CORRIGIDA COM EDIÇÃO APENAS NO FINAL
+// screens/ScorecardScreen.tsx - VERSÃO CORRIGIDA
 
 import React, { useState, useEffect, useCallback, useMemo, useContext } from 'react';
 import axios from 'axios';
@@ -12,8 +12,12 @@ import MinusIcon from '../components/icons/MinusIcon';
 import LeaderboardScreen from './LeaderboardScreen';
 import PhotoIcon from '../components/icons/PhotoIcon';
 
-// Interfaces (mantidas do seu código original)
-interface ScorecardScreenProps { accessCode: string; onBack: () => void; }
+interface ScorecardScreenProps { 
+  accessCode: string; 
+  onBack: () => void;
+  type: 'tournament' | 'training'; // <-- Prop para saber qual API chamar
+}
+
 interface PlayerData { id: number; fullName: string; teeColor: string; }
 interface ScoreData { playerId: number; holeNumber: number; strokes: number; }
 interface TeeData { id: number; holeId: number; color: string; yardage: number; }
@@ -29,14 +33,7 @@ interface ScorecardData {
     holes: HoleData[];
     status: string;
 }
-const teeColorStyles: { [key: string]: string } = {
-    Gold: 'border-yellow-400 text-yellow-400',
-    Blue: 'border-blue-500 text-blue-500',
-    White: 'border-white text-white',
-    Red: 'border-red-500 text-red-500',
-};
 
-// Função auxiliar para criar a sequência de buracos (shotgun)
 const generateHoleSequence = (startHole: number): number[] => {
     const sequence: number[] = [];
     for (let i = 0; i < 18; i++) {
@@ -46,24 +43,20 @@ const generateHoleSequence = (startHole: number): number[] => {
     return sequence;
 };
 
-const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAccessCode, onBack }) => {
+const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAccessCode, onBack, type }) => {
     const { user } = useContext(AuthContext);
     const [accessCode, setAccessCode] = useState(initialAccessCode);
     const [data, setData] = useState<ScorecardData | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    
-    // Estados para a nova lógica de sequência e edição
     const [holeSequence, setHoleSequence] = useState<number[]>([]);
     const [currentStep, setCurrentStep] = useState(0);
     const [highestAllowedStep, setHighestAllowedStep] = useState(0);
-    const [isEditing, setIsEditing] = useState(false); // Estado para controlar o modo de edição
-
+    const [isEditing, setIsEditing] = useState(false);
     const [localScores, setLocalScores] = useState<Record<string, Record<number, number | null>>>({});
     const [view, setView] = useState<'SCORECARD' | 'LEADERBOARD' | 'SUMMARY'>('SCORECARD');
     const [modalImageUrl, setModalImageUrl] = useState<string | null>(null);
     
-    // Sessão Persistente
     useEffect(() => {
         const persistedAccessCode = localStorage.getItem('activeAccessCode');
         if (persistedAccessCode) {
@@ -84,7 +77,12 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
         
         try {
             setLoading(true);
-            const response = await axios.get<ScorecardData>(`${import.meta.env.VITE_API_URL}/api/scorecard/${accessCode}?playerId=${user.id}`);
+            
+            const url = type === 'tournament'
+                ? `${import.meta.env.VITE_API_URL}/api/scorecard/${accessCode}?playerId=${user.id}`
+                : `${import.meta.env.VITE_API_URL}/api/trainings/scorecard/${accessCode}?playerId=${user.id}`;
+            
+            const response = await axios.get<ScorecardData>(url);
             const groupData = response.data;
             setData(groupData);
 
@@ -110,9 +108,8 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
 
             if (groupData.status === 'completed') {
                 setView('SUMMARY');
-                setIsEditing(true); // Permite edição se a rodada já estiver finalizada no backend
+                setIsEditing(true);
             }
-
             setError(null);
           } catch (err: any) {
               setError('Não foi possível carregar os dados do scorecard.');
@@ -120,7 +117,7 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
           } finally {
             setLoading(false);
           }
-    }, [accessCode, user]);
+    }, [accessCode, user, type]);
 
     useEffect(() => {
         fetchScorecardData();
@@ -143,8 +140,11 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
             playerId: player.id,
             strokes: localScores[player.id][currentHoleNumber]
         }));
+        
+        const endpoint = type === 'tournament' ? 'scores' : 'training_scores';
+        
         try {
-            await axios.post(`${import.meta.env.VITE_API_URL}/api/scores/hole`, {
+            await axios.post(`${import.meta.env.VITE_API_URL}/api/${endpoint}/hole`, {
                 groupId: data.groupId,
                 holeNumber: currentHoleNumber,
                 scores: scoresToSubmit
@@ -155,7 +155,7 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
                 setCurrentStep(nextStep);
                 setHighestAllowedStep(nextStep);
             } else {
-                setView('SUMMARY'); // Vai para o resumo após o último buraco
+                setView('SUMMARY');
             }
         } catch (error) {
             setError("Não foi possível salvar as pontuações.");
@@ -170,7 +170,7 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
         
         if(window.confirm(confirmationMessage)) {
             try {
-                // Se estiver em modo de edição, salva todos os buracos preenchidos
+                const scoreEndpoint = type === 'tournament' ? 'scores' : 'training_scores';
                 if (isEditing) {
                     for (const holeNum of holeSequence) {
                          if (isHoleComplete(holeNum, localScores, data.players)) {
@@ -178,7 +178,7 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
                                 playerId: player.id,
                                 strokes: localScores[player.id][holeNum]
                             }));
-                             await axios.post(`${import.meta.env.VITE_API_URL}/api/scores/hole`, {
+                             await axios.post(`${import.meta.env.VITE_API_URL}/api/${scoreEndpoint}/hole`, {
                                 groupId: data.groupId,
                                 holeNumber: holeNum,
                                 scores: scoresToSubmit
@@ -187,8 +187,9 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
                     }
                 }
                 
-                if (!isEditing) { // Só finaliza a rodada se não estava no modo de edição
-                    await axios.post(`${import.meta.env.VITE_API_URL}/api/groups/finish`, { groupId: data.groupId });
+                if (!isEditing) {
+                    const finishEndpoint = type === 'tournament' ? 'groups' : 'trainings';
+                    await axios.post(`${import.meta.env.VITE_API_URL}/api/${finishEndpoint}/finish`, { groupId: data.groupId });
                 }
                 localStorage.removeItem('activeAccessCode');
                 onBack();
@@ -200,7 +201,6 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
 
     const changeHole = (direction: number) => { 
         const newStep = currentStep + direction;
-        // Se estiver em modo de edição, pode navegar livremente. Senão, respeita o limite.
         if (isEditing && newStep >= 0 && newStep < 18) {
             setCurrentStep(newStep);
         } else if (!isEditing && newStep >= 0 && newStep <= highestAllowedStep) {
@@ -220,9 +220,9 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
 
     if (loading) return <Spinner />;
     if (error) return <div className="text-red-400 text-center p-6 bg-red-900/50 rounded-lg">{error}</div>;
-    if (!data) return <p className="text-gray-400 text-center">A carregar dados do torneio...</p>;
+    if (!data) return <p className="text-gray-400 text-center">A carregar dados do grupo...</p>;
 
-    if (view === 'LEADERBOARD') {
+    if (view === 'LEADERBOARD' && type === 'tournament') {
         return <LeaderboardScreen tournamentId={data.tournamentId.toString()} onBack={() => setView('SCORECARD')} />;
     }
 
@@ -251,7 +251,6 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
         );
     }
     
-    // O buraco está "trancado" se não estiver em modo de edição e o passo atual for menor que o passo máximo permitido
     const isHoleLocked = !isEditing && currentStep < highestAllowedStep;
 
     return (
@@ -265,7 +264,9 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
                 <div className="flex justify-between items-center pb-4 border-b border-gray-700">
                     <Button onClick={onBack} variant="secondary" size="sm"><ChevronLeftIcon className="h-5 w-5 mr-1"/> Início</Button>
                     <h2 className="text-xl font-bold text-center">{data.tournamentName}</h2>
-                    <Button onClick={() => setView('LEADERBOARD')} size="sm">Ver Leaderboard</Button>
+                    {type === 'tournament' && (
+                        <Button onClick={() => setView('LEADERBOARD')} size="sm">Ver Leaderboard</Button>
+                    )}
                 </div>
                 <div className="flex items-center justify-between p-4 my-4 bg-gray-900 rounded-lg">
                     <Button size="icon" onClick={() => changeHole(-1)} disabled={currentStep === 0}><ChevronLeftIcon className="h-6 w-6"/></Button>

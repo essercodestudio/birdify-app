@@ -1,4 +1,4 @@
-// App.tsx - VERSÃO FINAL E COMPLETA COM TODAS AS ROTAS
+// App.tsx - VERSÃO COM LOGOUT CORRIGIDO
 
 import React, { useState, useMemo, useEffect, useContext } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
@@ -40,8 +40,6 @@ const AppRoutes: React.FC = () => {
                     </ProtectedRoute>
                 } />
                 
-                {/* Adicione outras rotas da sua aplicação aqui, se necessário (ex: /admin, /scorecard) */}
-                
                 {/* Rota de fallback para qualquer outro caminho */}
                 <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
@@ -72,7 +70,14 @@ const App: React.FC = () => {
         () => ({
             user,
             login: (loggedInUser: User) => setUser(loggedInUser),
-            logout: () => setUser(null),
+            logout: () => {
+                setUser(null);
+                // --- ESTA É A CORREÇÃO CRÍTICA ---
+                // Limpa a "memória" da última tela visitada ao fazer logout
+                localStorage.removeItem('activeScreen');
+                localStorage.removeItem('activeAccessCode');
+                localStorage.removeItem('selectedTournamentId');
+            },
         }),
         [user]
     );

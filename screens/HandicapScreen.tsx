@@ -1,15 +1,17 @@
 // screens/HandicapScreen.tsx - VERSÃO CORRIGIDA
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useContext } from 'react';
 import axios from 'axios';
 import Button from '../components/Button';
 import Spinner from '../components/Spinner';
-import { User } from '../types'; // Importe o tipo User
+import { User } from '../types';
+import { AuthContext } from '../context/AuthContext';
 
 interface HandicapScreenProps {
   accessCode: string;
   onHandicapsSubmitted: () => void;
-  user: User | null; // <<< ALTERAÇÃO: Recebe o utilizador logado
+  user: User | null;
+  type: 'tournament' | 'training'; // <-- NOVO: Para saber qual API chamar
 }
 
 interface GroupPlayerData {
@@ -21,7 +23,7 @@ interface GroupData {
     players: GroupPlayerData[];
 }
 
-const HandicapScreen: React.FC<HandicapScreenProps> = ({ accessCode, onHandicapsSubmitted, user }) => {
+const HandicapScreen: React.FC<HandicapScreenProps> = ({ accessCode, onHandicapsSubmitted, user, type }) => {
   const [groupData, setGroupData] = useState<GroupData | null>(null);
   const [handicaps, setHandicaps] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
@@ -29,24 +31,28 @@ const HandicapScreen: React.FC<HandicapScreenProps> = ({ accessCode, onHandicaps
 
   useEffect(() => {
     const fetchGroupData = async () => {
-      // Garante que só faz a chamada se o utilizador estiver definido
       if (!user) {
           setError('Utilizador não autenticado.');
           setLoading(false);
           return;
       }
       try {
-        // <<< ALTERAÇÃO: Adiciona o playerId à chamada da API
-        const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/scorecard/${accessCode}?playerId=${user.id}`);
+        // --- LÓGICA CORRIGIDA ---
+        // Escolhe a URL certa com base no tipo (torneio ou treino)
+        const url = type === 'tournament'
+            ? `${import.meta.env.VITE_API_URL}/api/scorecard/${accessCode}?playerId=${user.id}`
+            : `${import.meta.env.VITE_API_URL}/api/trainings/scorecard/${accessCode}?playerId=${user.id}`;
+        
+        const response = await axios.get(url);
         setGroupData(response.data);
       } catch (err) {
-        setError('Não foi possível carregar os dados do grupo.');
+        setError('Não foi possível carregar os dados do grupo. Verifique o código de acesso.');
       } finally {
         setLoading(false);
       }
     };
     fetchGroupData();
-  }, [accessCode, user]); // A função agora depende do 'user'
+  }, [accessCode, user, type]);
 
   const handleHandicapChange = (playerId: string, value: string) => {
     if (/^\d*$/.test(value)) {
@@ -61,6 +67,7 @@ const HandicapScreen: React.FC<HandicapScreenProps> = ({ accessCode, onHandicaps
     }
 
     try {
+      // A lógica de submissão de handicap pode ser a mesma para ambos por enquanto
       await axios.post(`${import.meta.env.VITE_API_URL}/api/groups/handicaps`, {
         groupId: groupData?.groupId,
         handicaps: handicaps
@@ -72,15 +79,15 @@ const HandicapScreen: React.FC<HandicapScreenProps> = ({ accessCode, onHandicaps
   };
 
   if (loading) return <Spinner />;
-  if (error) return <div className="text-red-400 text-center">{error}</div>;
-  if (!groupData) return <p className="text-center text-gray-400 p-6">Grupo não encontrado ou código de acesso inválido.</p>;
+  if (error) return <div className="text-red-400 text-center p-4">{error}</div>;
+  if (!groupData) return null;
 
   return (
     <div className="bg-gray-800 p-4 sm:p-6 rounded-lg shadow-xl">
       <h1 className="text-3xl font-bold text-white">Handicap do Grupo</h1>
-      <p className="text-gray-400 mb-6">Insira o handicap de cada jogador para este torneio.</p>
+      <p className="text-gray-400 mb-6">Insira o handicap de cada jogador para esta rodada.</p>
       <form onSubmit={handleSubmit} className="space-y-4">
-        {groupData.players.map((player) => (
+        {groupData.players.map((player: any) => (
           <div key={player.id}>
             <label htmlFor={`hcp-${player.id}`} className="block text-sm font-medium text-white">{player.fullName}</label>
             <input

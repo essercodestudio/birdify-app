@@ -1,4 +1,4 @@
-// screens/LoginScreen.tsx - VERSÃO FINAL E COMPLETA
+// screens/LoginScreen.tsx - VERSÃO CORRIGIDA E COMPLETA
 
 import React, { useState, useContext, useEffect } from 'react';
 import axios from 'axios';
@@ -16,6 +16,7 @@ const LoginScreen: React.FC = () => {
     const [password, setPassword] = useState('');
     const [fullName, setFullName] = useState('');
     const [gender, setGender] = useState('Male'); 
+    const [birthDate, setBirthDate] = useState(''); // <-- NOVO ESTADO ADICIONADO
 
     const [clubList, setClubList] = useState<string[]>([]);
     const [error, setError] = useState<string | null>(null);
@@ -57,7 +58,10 @@ const LoginScreen: React.FC = () => {
         e.preventDefault();
         setIsLoading(true);
         setError(null);
-        const newPlayerData = { fullName, email, password, gender, modality, club };
+        
+        // --- ALTERAÇÃO AQUI: Adiciona birthDate ao objeto que será enviado ---
+        const newPlayerData = { fullName, email, password, gender, modality, club, birthDate };
+        
         try {
             await axios.post(`${import.meta.env.VITE_API_URL}/api/players`, newPlayerData);
             const response = await axios.post(`${import.meta.env.VITE_API_URL}/api/login`, { email, password });
@@ -84,7 +88,6 @@ const LoginScreen: React.FC = () => {
         }
     };
 
-    // Função que renderiza o formulário correto
     const renderForm = () => {
         if (view === 'FORGOT_PASSWORD') {
             return (
@@ -107,6 +110,23 @@ const LoginScreen: React.FC = () => {
                             <button type="button" onClick={() => setModality('Footgolf')} className={`flex-1 px-4 py-2 text-sm rounded-r-md transition-colors ${modality === 'Footgolf' ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>Footgolf</button>
                         </div>
                     </div>
+                    
+                    {/* --- CAMPO DE DATA DE NASCIMENTO CONDICIONAL --- */}
+                    {modality === 'Footgolf' && (
+                        <div>
+                            <label htmlFor="birthDate" className="block text-sm font-medium text-gray-400">Data de Nascimento</label>
+                            <input 
+                                id="birthDate" 
+                                name="birthDate" 
+                                type="date" 
+                                required={modality === 'Footgolf'} // Só é obrigatório para Footgolf
+                                className="mt-1 block w-full px-3 py-3 border border-gray-700 bg-gray-900 text-white rounded-md"
+                                value={birthDate} 
+                                onChange={(e) => setBirthDate(e.target.value)} 
+                            />
+                        </div>
+                    )}
+                    
                     <div>
                         <label htmlFor="club" className="block text-sm font-medium text-gray-400">Clube (Opcional)</label>
                         <select id="club" value={club} onChange={e => setClub(e.target.value)} className="mt-1 block w-full px-3 py-3 border border-gray-700 bg-gray-900 text-white rounded-md">

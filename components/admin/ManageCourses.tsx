@@ -50,6 +50,8 @@ const ManageCourses: React.FC<ManageCoursesProps> = ({
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editingCourse, setEditingCourse] = useState<any | null>(null);
 
+  // ... dentro de ManageCourses.tsx ...
+
   const fetchCourses = async () => {
     if (!adminUser) return;
     setLoading(true);
@@ -61,12 +63,16 @@ const ManageCourses: React.FC<ManageCoursesProps> = ({
         }
       );
       setCourses(response.data);
-    } catch (err) {
+    } catch (err: any) {
+      // ADICIONE ESTA LINHA PARA VER O ERRO DETALHADO
+      console.error("Erro detalhado ao buscar campos:", err.response?.data || err.message);
       setError("Falha ao carregar os campos.");
     } finally {
       setLoading(false);
     }
   };
+
+// ... resto do ficheiro ...
 
   useEffect(() => {
     if (adminUser) {
