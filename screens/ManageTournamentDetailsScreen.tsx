@@ -1,188 +1,330 @@
-// screens/ManageTournamentDetailsScreen.tsx - VERSÃO COMPLETA E CORRIGIDA
-
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import Button from '../components/Button';
-import Spinner from '../components/Spinner';
-import RegistrationFormSetup from '../components/admin/RegistrationFormSetup';
+import './ManageTournamentDetailsScreen.css';
 
-interface ManageTournamentDetailsProps {
-  tournament: any;
-  onBack: () => void;
-}
-
-const ManageTournamentDetailsScreen: React.FC<ManageTournamentDetailsProps> = ({ tournament, onBack }) => {
-  const [activeTab, setActiveTab] = useState<'registrations' | 'settings'>('registrations');
-  
-  // Estados para a aba de Inscrições
+const ManageTournamentDetailsScreen: React.FC = () => {
+  const { tournamentId } = useParams<{ tournamentId: string }>();
+  const navigate = useNavigate();
+  const [tournament, setTournament] = useState<any>(null);
+  const [questions, setQuestions] = useState<any[]>([]);
   const [registrations, setRegistrations] = useState<any[]>([]);
-  const [loadingRegistrations, setLoadingRegistrations] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-  // Estados para a aba de Configurações
-  const [bannerUrl, setBannerUrl] = useState(tournament.bannerImageUrl || '');
-  const [paymentInstructions, setPaymentInstructions] = useState(tournament.paymentInstructions || '');
-  const [isSaving, setIsSaving] = useState(false);
-
-  // Função para buscar os inscritos com as suas respostas
-  const fetchRegistrations = useCallback(async () => {
-    setLoadingRegistrations(true);
-    try {
-      const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/tournaments/${tournament.id}/registrations-with-answers`);
-      setRegistrations(response.data);
-    } catch (err) {
-      console.error("Erro ao carregar inscrições:", err);
-    } finally {
-      setLoadingRegistrations(false);
-    }
-  }, [tournament.id]);
-
+  // Buscar dados do torneio
   useEffect(() => {
-    if (activeTab === 'registrations') {
-      fetchRegistrations();
-    }
-  }, [activeTab, fetchRegistrations]);
-
-  const handleConfirmPayment = async (registrationId: number) => {
-    if (window.confirm('Tem a certeza de que quer confirmar o pagamento para este jogador?')) {
-        try {
-            await axios.patch(`${import.meta.env.VITE_API_URL}/api/registrations/${registrationId}/confirm`);
-            alert('Pagamento confirmado!');
-            fetchRegistrations(); // Re-busca os dados para atualizar o status
-        } catch (error) {
-            alert('Falha ao confirmar o pagamento.');
-        }
-    }
-  };
-  
-  const handleSaveChanges = async () => {
-      setIsSaving(true);
+    const fetchTournamentData = async () => {
       try {
-          await axios.put(`${import.meta.env.VITE_API_URL}/api/tournaments/${tournament.id}`, {
-              bannerImageUrl: bannerUrl,
-              paymentInstructions: paymentInstructions,
-          });
-          alert('Configurações salvas com sucesso!');
-      } catch (error) {
-          alert('Falha ao salvar as configurações.');
-      } finally {
-          setIsSaving(false);
-      }
-  };
+        setLoading(true);
+        
+        // Buscar detalhes do torneio
+        const tournamentResponse = await axios.get(`/api/tournaments/${tournamentId}`);
+        setTournament(tournamentResponse.data);
 
-  const handleExport = async () => {
+        // Buscar perguntas do torneio
+        const questionsResponse = await axios.get(`/api/tournaments/${tournamentId}/questions`);
+        setQuestions(questionsResponse.data);
+
+        // Buscar inscrições com respostas
+        const registrationsResponse = await axios.get(`/api/tournaments/${tournamentId}/registrations-with-answers`);
+        setRegistrations(registrationsResponse.data);
+
+      } catch (err) {
+        console.error('Erro ao carregar dados do torneio:', err);
+        setError('Erro ao carregar dados do torneio');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    if (tournamentId) {
+      fetchTournamentData();
+    }
+  }, [tournamentId]);
+
+  // Função para exportar inscritos para Excel
+  const handleExportRegistrations = async () => {
     try {
-        const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/tournaments/${tournament.id}/export-registrations`, {
-            responseType: 'blob',
-        });
-        const url = window.URL.createObjectURL(new Blob([response.data]));
-        const link = document.createElement('a');
-        link.href = url;
-        link.setAttribute('download', 'Inscricoes_Torneio.xlsx');
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
+      const response = await axios.get(`/api/tournaments/${tournamentId}/export-registrations`, {
+        responseType: 'blob'
+      });
+      
+      // Criar URL para download
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `Inscricoes_Torneio_${tournamentId}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      
+      alert('Exportação realizada com sucesso!');
     } catch (error) {
-        alert('Erro ao gerar o relatório de inscrições.');
+      console.error('Erro ao exportar inscrições:', error);
+      alert('Erro ao exportar inscrições.');
     }
   };
+
+  // Função para alternar status de pagamento (confirmar/desfazer)
+  const handleTogglePaymentStatus = async (registrationId: string, currentStatus: string) => {
+    try {
+      const newStatus = currentStatus === 'confirmed' ? 'pending' : 'confirmed';
+      
+      await axios.patch(`/api/registrations/${registrationId}/status`, {
+        status: newStatus
+      });
+      
+      // Atualizar a lista local
+      setRegistrations(prev => prev.map(reg => 
+        reg.id === registrationId 
+          ? { ...reg, paymentStatus: newStatus }
+          : reg
+      ));
+      
+      alert(`Pagamento ${newStatus === 'confirmed' ? 'confirmado' : 'marcado como pendente'} com sucesso!`);
+    } catch (error) {
+      console.error('Erro ao atualizar status do pagamento:', error);
+      alert('Erro ao atualizar status do pagamento.');
+    }
+  };
+
+  // Função para adicionar nova pergunta
+  const handleAddQuestion = async () => {
+    const questionText = prompt('Digite a pergunta:');
+    if (!questionText) return;
+
+    const questionType = prompt('Tipo da pergunta (TEXT, NUMBER, MULTIPLE_CHOICE):', 'TEXT');
+    const isRequired = confirm('A pergunta é obrigatória?');
+
+    try {
+      await axios.post(`/api/tournaments/${tournamentId}/questions`, {
+        questionText,
+        questionType: questionType || 'TEXT',
+        isRequired
+      });
+      
+      // Recarregar perguntas
+      const questionsResponse = await axios.get(`/api/tournaments/${tournamentId}/questions`);
+      setQuestions(questionsResponse.data);
+      
+      alert('Pergunta adicionada com sucesso!');
+    } catch (error) {
+      console.error('Erro ao adicionar pergunta:', error);
+      alert('Erro ao adicionar pergunta.');
+    }
+  };
+
+  // Função para apagar pergunta
+  const handleDeleteQuestion = async (questionId: number) => {
+    if (!confirm('Tem certeza que deseja apagar esta pergunta?')) return;
+
+    try {
+      await axios.delete(`/api/questions/${questionId}`);
+      
+      // Recarregar perguntas
+      const questionsResponse = await axios.get(`/api/tournaments/${tournamentId}/questions`);
+      setQuestions(questionsResponse.data);
+      
+      alert('Pergunta apagada com sucesso!');
+    } catch (error) {
+      console.error('Erro ao apagar pergunta:', error);
+      alert('Erro ao apagar pergunta.');
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="container">
+        <div className="loading">Carregando...</div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="container">
+        <div className="error">{error}</div>
+        <button onClick={() => navigate('/admin/tournaments')} className="btn btn-secondary">
+          Voltar para Torneios
+        </button>
+      </div>
+    );
+  }
+
+  if (!tournament) {
+    return (
+      <div className="container">
+        <div className="error">Torneio não encontrado</div>
+        <button onClick={() => navigate('/admin/tournaments')} className="btn btn-secondary">
+          Voltar para Torneios
+        </button>
+      </div>
+    );
+  }
 
   return (
-    <div className="bg-gray-800 p-6 rounded-lg shadow-xl space-y-6">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center">
-            <Button onClick={onBack} variant="secondary" size="sm" className="mr-4">&larr; Voltar</Button>
-            <div>
-              <h2 className="text-2xl font-bold text-white">Gerenciar Torneio: {tournament.name}</h2>
-            </div>
+    <div className="container">
+      {/* Cabeçalho */}
+      <div className="header">
+        <button onClick={() => navigate('/admin/tournaments')} className="btn btn-secondary">
+          ← Voltar
+        </button>
+        <h1>{tournament.name}</h1>
+        <div className="tournament-info">
+          <p><strong>Data:</strong> {new Date(tournament.date).toLocaleDateString('pt-BR')}</p>
+          <p><strong>Campo:</strong> {tournament.courseName}</p>
         </div>
-        {activeTab === 'registrations' && (
-            <Button onClick={handleExport} disabled={registrations.length === 0}>Exportar Inscritos</Button>
-        )}
       </div>
 
-      <div className="flex gap-2 border-b border-gray-600 mb-4">
-        <button onClick={() => setActiveTab('registrations')} className={`py-2 px-4 text-sm font-medium ${activeTab === 'registrations' ? 'border-b-2 border-green-400 text-white' : 'text-gray-400'}`}>Inscrições</button>
-        <button onClick={() => setActiveTab('settings')} className={`py-2 px-4 text-sm font-medium ${activeTab === 'settings' ? 'border-b-2 border-green-400 text-white' : 'text-gray-400'}`}>Configurações</button>
+      {/* Abas */}
+      <div className="tabs">
+        <div className="tab active">Inscrições</div>
+        <div className="tab">Perguntas</div>
+        <div className="tab">Configurações</div>
       </div>
 
-      <div>
-        {activeTab === 'registrations' && (
-           loadingRegistrations ? <Spinner /> : (
-             <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-600">
-                    <thead className="bg-gray-700">
-                        <tr>
-                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase">Status</th>
-                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase">Jogador</th>
-                            {registrations[0]?.answers.map((ans: any, index: number) => (
-                                <th key={index} className="px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase">{ans.questionText}</th>
-                            ))}
-                        </tr>
-                    </thead>
-                    <tbody className="bg-gray-800 divide-y divide-gray-600">
-                        {registrations.length > 0 ? registrations.map((reg: any) => (
-                            <tr key={reg.id}>
-                                <td className="px-4 py-3 align-top">
-                                    <button onClick={() => handleConfirmPayment(reg.id)} className="cursor-pointer">
-                                        {reg.paymentStatus === 'confirmed' ? (
-                                            <span title="Pagamento Confirmado" className="text-2xl">✅</span>
-                                        ) : (
-                                            <span title="Pagamento Pendente" className="text-2xl">❌</span>
-                                        )}
-                                    </button>
-                                </td>
-                                <td className="px-4 py-3 align-top font-medium">{reg.fullName}</td>
-                                {reg.answers.map((ans: any, index: number) => (
-                                    <td key={index} className="px-4 py-3 align-top text-gray-300">{ans.answerText}</td>
-                                ))}
-                            </tr>
-                        )) : (
-                            <tr><td colSpan={10} className="text-center text-gray-400 py-6">Nenhum jogador inscrito ainda.</td></tr>
-                        )}
-                    </tbody>
-                </table>
-             </div>
-           )
-        )}
-        {activeTab === 'settings' && (
-          <div className="space-y-8">
-            <RegistrationFormSetup tournament={tournament} />
-            
-            <div className="p-4 bg-gray-900/50 rounded-lg border border-gray-700 space-y-4">
-              <h4 className="font-bold text-lg mb-3 text-white">Outras Configurações</h4>
-              
-              <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Link Exclusivo de Inscrição</label>
-                  <input 
-                    type="text" 
-                    readOnly 
-                    value={`${window.location.origin}/register/${tournament.id}`} 
-                    className="w-full px-3 py-2 border border-gray-600 bg-gray-700 text-gray-300 rounded-md cursor-pointer"
-                    onClick={(e) => {
-                        (e.target as HTMLInputElement).select();
-                        navigator.clipboard.writeText((e.target as HTMLInputElement).value);
-                        alert('Link copiado para a área de transferência!');
-                    }}
-                  />
-                   <p className="text-xs text-gray-500 mt-1">Clique no link para copiar.</p>
-              </div>
-              
-              <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">URL do Banner</label>
-                  <input type="text" value={bannerUrl} onChange={(e) => setBannerUrl(e.target.value)} className="w-full px-3 py-2 border border-gray-600 bg-gray-900 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent" placeholder="https://exemplo.com/imagem.png"/>
-              </div>
-              <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Instruções de Pagamento</label>
-                  <textarea value={paymentInstructions} onChange={(e) => setPaymentInstructions(e.target.value)} rows={5} className="w-full px-3 py-2 border border-gray-600 bg-gray-900 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent" placeholder="Ex: PIX para..."></textarea>
-              </div>
-              <div className="text-right">
-                  <Button onClick={handleSaveChanges} isLoading={isSaving}>Salvar Outras Configurações</Button>
-              </div>
-            </div>
+      {/* Conteúdo - Inscrições */}
+      <div className="tab-content">
+        <div className="section-header">
+          <h2>Inscrições ({registrations.length})</h2>
+          <div className="actions">
+            <button onClick={handleExportRegistrations} className="btn btn-primary">
+              📊 Exportar Inscritos
+            </button>
+          </div>
+        </div>
+
+        {registrations.length === 0 ? (
+          <div className="empty-state">
+            <p>Nenhuma inscrição encontrada para este torneio.</p>
+          </div>
+        ) : (
+          <div className="table-container">
+            <table className="registrations-table">
+              <thead>
+                <tr>
+                  <th>Nome do Jogador</th>
+                  <th>Status Pagamento</th>
+                  {/* Cabeçalhos dinâmicos para perguntas */}
+                  {questions.map(question => (
+                    <th key={question.id}>{question.questionText}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {registrations.map(registration => (
+                  <tr key={registration.id}>
+                    <td>{registration.fullName}</td>
+                    <td>
+                      <button 
+                        onClick={() => handleTogglePaymentStatus(registration.id, registration.paymentStatus)}
+                        className={`payment-btn ${registration.paymentStatus === 'confirmed' ? 'confirmed' : 'pending'}`}
+                        title={registration.paymentStatus === 'confirmed' ? 'Clique para marcar como pendente' : 'Clique para confirmar pagamento'}
+                      >
+                        {registration.paymentStatus === 'confirmed' ? '✅ Pago' : '❌ Pendente'}
+                      </button>
+                    </td>
+                    {/* Respostas dinâmicas */}
+                    {questions.map(question => {
+                      const answer = registration.answers?.find((a: any) => a.questionText === question.questionText);
+                      return (
+                        <td key={question.id}>
+                          {answer ? answer.answer : '-'}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
+      </div>
+
+      {/* Conteúdo - Perguntas (aba secundária) */}
+      <div className="tab-content" style={{ display: 'none' }}>
+        <div className="section-header">
+          <h2>Perguntas do Formulário ({questions.length})</h2>
+          <button onClick={handleAddQuestion} className="btn btn-primary">
+            ➕ Adicionar Pergunta
+          </button>
+        </div>
+
+        {questions.length === 0 ? (
+          <div className="empty-state">
+            <p>Nenhuma pergunta configurada para este torneio.</p>
+            <p>Adicione perguntas para personalizar o formulário de inscrição.</p>
+          </div>
+        ) : (
+          <div className="questions-list">
+            {questions.map(question => (
+              <div key={question.id} className="question-card">
+                <div className="question-header">
+                  <h3>{question.questionText}</h3>
+                  <button 
+                    onClick={() => handleDeleteQuestion(question.id)}
+                    className="btn btn-danger btn-sm"
+                    title="Apagar pergunta"
+                  >
+                    🗑️
+                  </button>
+                </div>
+                <div className="question-details">
+                  <span className="question-type">{question.questionType}</span>
+                  <span className={`question-required ${question.isRequired ? 'required' : 'optional'}`}>
+                    {question.isRequired ? 'Obrigatório' : 'Opcional'}
+                  </span>
+                </div>
+                {question.options && question.options.length > 0 && (
+                  <div className="question-options">
+                    <strong>Opções:</strong>
+                    <ul>
+                      {question.options.map((option: any, index: number) => (
+                        <li key={index}>{option.optionText}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Conteúdo - Configurações (aba secundária) */}
+      <div className="tab-content" style={{ display: 'none' }}>
+        <div className="section-header">
+          <h2>Configurações do Torneio</h2>
+        </div>
+        
+        <div className="settings-form">
+          <div className="form-group">
+            <label>URL do Banner:</label>
+            <input 
+              type="text" 
+              defaultValue={tournament.bannerImageUrl || ''}
+              placeholder="https://exemplo.com/banner.jpg"
+            />
+          </div>
+          
+          <div className="form-group">
+            <label>Instruções de Pagamento:</label>
+            <textarea 
+              defaultValue={tournament.paymentInstructions || ''}
+              placeholder="Instruções para os jogadores realizarem o pagamento..."
+              rows={4}
+            />
+          </div>
+          
+          <button className="btn btn-primary">
+            💾 Salvar Configurações
+          </button>
+        </div>
       </div>
     </div>
   );
 };
+
 export default ManageTournamentDetailsScreen;

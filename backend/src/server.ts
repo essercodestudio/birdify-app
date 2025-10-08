@@ -355,52 +355,67 @@ app.patch("/api/registrations/:registrationId/confirm", async (req: Request, res
   }
 });
 
-// --- ROTA DE INSCRIÇÃO EM TORNEIO (CORRIGIDA) ---
+// --- ROTA DE INSCRIÇÃO (VERSÃO FINAL) ---
 app.post("/api/tournaments/:tournamentId/register", async (req: Request, res: Response) => {
-  const { tournamentId } = req.params;
-  const { playerId, answers } = req.body; 
+  console.log("📝 Nova inscrição - Torneio:", req.params.tournamentId, "Jogador:", req.body.playerId);
 
-  if (!playerId || !answers || !Array.isArray(answers)) {
-    return res.status(400).json({ error: "ID do jogador e respostas são obrigatórios." });
-  }
+  const { tournamentId } = req.params;
+  const { playerId, answers } = req.body;
 
   let connection;
   try {
-    connection = await pool.getConnection(); 
-    await connection.beginTransaction();
+    connection = await pool.getConnection();
 
-    const [registrationResult]: any = await connection.execute(
+    // VERIFICAR SE JÁ ESTÁ INSCRITO
+    const [existing]: any = await connection.execute(
+      "SELECT id FROM tournament_registrations WHERE playerId = ? AND tournamentId = ?",
+      [playerId, tournamentId]
+    );
+
+    if (existing.length > 0) {
+      return res.status(409).json({ error: "Você já está inscrito neste torneio." });
+    }
+
+    // FAZER INSCRIÇÃO
+    const [result]: any = await connection.execute(
       "INSERT INTO tournament_registrations (playerId, tournamentId, paymentStatus) VALUES (?, ?, 'pending')",
       [playerId, tournamentId]
     );
-    const newRegistrationId = registrationResult.insertId;
+    
+    const registrationId = result.insertId;
+    console.log("✅ Inscrição criada, ID:", registrationId);
 
-    if (answers.length > 0) {
-      const answerValues = answers.map((ans: { questionId: number, answerText: string }) => 
-        [newRegistrationId, ans.questionId, ans.answerText]
-      );
-      await connection.query(
-        'INSERT INTO registration_answers (registrationId, questionId, answerText) VALUES ?',
-        [answerValues]
-      );
+    // SALVAR RESPOSTAS
+    if (answers && Array.isArray(answers) && answers.length > 0) {
+      console.log(`📋 Salvando ${answers.length} resposta(s)`);
+      
+      for (const answer of answers) {
+        if (answer.questionId && answer.answerText) {
+          await connection.execute(
+            "INSERT INTO registration_answers (registrationId, questionId, answer) VALUES (?, ?, ?)",
+            [registrationId, answer.questionId, answer.answerText]
+          );
+          console.log(`✅ Resposta salva: questionId=${answer.questionId}, resposta="${answer.answerText}"`);
+        }
+      }
+      console.log("✅ Todas as respostas salvas");
     }
 
-    await connection.commit();
-    res.status(201).json({ message: "Inscrição realizada com sucesso!" });
+    console.log("🎉 INSCRIÇÃO CONCLUÍDA COM SUCESSO!");
+    
+    res.status(201).json({ 
+      success: true,
+      message: "Inscrição realizada com sucesso!",
+      registrationId: registrationId
+    });
 
   } catch (error: any) {
-    if(connection) await connection.rollback();
-    console.error("Erro detalhado ao realizar inscrição:", error); 
-    
-    if (error.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({ error: "Você já está inscrito neste torneio." });
-    }
-    res.status(500).json({ error: "Ocorreu um erro interno ao realizar a inscrição." });
+    console.error("❌ ERRO:", error.message);
+    res.status(500).json({ error: "Erro interno ao realizar a inscrição." });
   } finally {
-    if (connection) connection.release(); 
+    if (connection) connection.release();
   }
 });
-
 // --- ROTAS DE TREINOS ---
 app.post("/api/trainings", async (req: Request, res: Response) => {
   const { courseId, creatorId, date, startHole } = req.body;
@@ -2250,12 +2265,14 @@ app.delete("/api/questions/:questionId", async (req: Request, res: Response) => 
   }
 });
 
-// --- ROTAS PARA GESTÃO DE INSCRIÇÕES COM RESPOSTAS DINÂMICAS ---
+// --- ROTA FINAL CORRIGIDA ---
 app.get("/api/tournaments/:tournamentId/registrations-with-answers", async (req: Request, res: Response) => {
   const { tournamentId } = req.params;
   let connection;
   try {
     connection = await pool.getConnection();
+    
+    // Buscar inscrições
     const [registrations]: any[] = await connection.execute(`
       SELECT r.id, r.paymentStatus, p.fullName
       FROM tournament_registrations r
@@ -2264,9 +2281,10 @@ app.get("/api/tournaments/:tournamentId/registrations-with-answers", async (req:
       ORDER BY p.fullName ASC
     `, [tournamentId]);
 
+    // Buscar respostas (CORRIGIDO: a.answer em vez de a.answerText)
     for (const reg of registrations) {
       const [answers]: any[] = await connection.execute(`
-        SELECT q.questionText, a.answerText
+        SELECT q.questionText, a.answer
         FROM registration_answers a
         JOIN tournament_questions q ON a.questionId = q.id
         WHERE a.registrationId = ?
@@ -2283,7 +2301,6 @@ app.get("/api/tournaments/:tournamentId/registrations-with-answers", async (req:
     if (connection) connection.release();
   }
 });
-
 // --- ROTA PARA EXPORTAR LISTA DE INSCRITOS ---
 app.get("/api/tournaments/:tournamentId/export-registrations", async (req: Request, res: Response) => {
   const { tournamentId } = req.params;
@@ -2411,7 +2428,104 @@ app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
   next();
 });
+// === NOVAS ROTAS PARA CORRIGIR OS PROBLEMAS ===
 
+// ROTA 1: Buscar jogadores confirmados para montar grupos
+app.get("/api/tournaments/:tournamentId/confirmed-players", async (req: Request, res: Response) => {
+  const { tournamentId } = req.params;
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    
+    const [players] = await connection.execute(`
+      SELECT r.id as registrationId, p.id as playerId, p.fullName, p.gender
+      FROM tournament_registrations r
+      JOIN players p ON r.playerId = p.id
+      WHERE r.tournamentId = ? AND r.paymentStatus = 'confirmed'
+      ORDER BY p.fullName ASC
+    `, [tournamentId]);
+    
+    res.json(players);
+  } catch (error) {
+    console.error("Erro ao buscar jogadores confirmados:", error);
+    res.status(500).json({ error: "Erro ao buscar jogadores." });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// ROTA 2: Exportar inscritos para Excel
+app.get("/api/tournaments/:tournamentId/export-registrations", async (req: Request, res: Response) => {
+  const { tournamentId } = req.params;
+  let connection;
+  try {
+    connection = await pool.getConnection();
+
+    // Buscar inscrições com respostas
+    const [registrations]: any[] = await connection.execute(`
+      SELECT p.fullName, r.paymentStatus, q.questionText, ra.answer
+      FROM tournament_registrations r
+      JOIN players p ON r.playerId = p.id
+      LEFT JOIN registration_answers ra ON r.id = ra.registrationId
+      LEFT JOIN tournament_questions q ON ra.questionId = q.id
+      WHERE r.tournamentId = ?
+      ORDER BY p.fullName ASC
+    `, [tournamentId]);
+
+    if (registrations.length === 0) {
+      return res.status(404).send("Nenhum inscrito para exportar.");
+    }
+
+    // Criar Excel
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Inscritos');
+    
+    // Cabeçalho
+    sheet.addRow(['Nome', 'Status Pagamento', 'Pergunta', 'Resposta']);
+    
+    // Dados
+    registrations.forEach((reg: any) => {
+      sheet.addRow([reg.fullName, reg.paymentStatus, reg.questionText, reg.answer]);
+    });
+
+    // Ajustar colunas
+    sheet.columns.forEach(column => { column.width = 20; });
+    
+    // Enviar arquivo
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=Inscricoes_${tournamentId}.xlsx`);
+    await workbook.xlsx.write(res);
+    res.end();
+
+  } catch (error) {
+    console.error("Erro ao exportar:", error);
+    res.status(500).json({ error: "Erro ao exportar." });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// ROTA 3: Alternar status de pagamento (confirmar/desfazer)
+app.patch("/api/registrations/:registrationId/status", async (req: Request, res: Response) => {
+  let connection;
+  try {
+    const { registrationId } = req.params;
+    const { status } = req.body;
+    
+    connection = await pool.getConnection();
+    await connection.execute(
+      "UPDATE tournament_registrations SET paymentStatus = ? WHERE id = ?",
+      [status, registrationId]
+    );
+    
+    res.status(200).json({ message: "Status atualizado!", newStatus: status });
+  } catch (error) {
+    console.error("Erro ao atualizar pagamento:", error);
+    res.status(500).json({ error: "Erro ao atualizar." });
+  } finally {
+    if (connection) connection.release();
+  }
+});
 app.listen(port, () => {
   console.log(`🚀 Servidor backend rodando em http://localhost:${port}`);
 });
