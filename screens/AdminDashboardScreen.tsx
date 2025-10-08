@@ -1,4 +1,4 @@
-// screens/AdminDashboardScreen.tsx - VERSÃO COM GESTÃO UNIFICADA
+// screens/AdminDashboardScreen.tsx - VERSÃO CORRIGIDA PARA CHAMAR A TELA CERTA
 
 import React, { useState, useEffect, useCallback, useContext } from 'react';
 import axios from 'axios';
@@ -7,7 +7,8 @@ import { AuthContext } from '../context/AuthContext';
 import ManageCourses from '../components/admin/ManageCourses';
 import ManageTournaments from '../components/admin/ManageTournaments';
 import ManageGroups from '../components/admin/ManageGroups';
-import ManageRegistrations from '../components/admin/ManageRegistrations';
+// --- ALTERAÇÃO 1: Importar o componente correto ---
+import ManageTournamentDetailsScreen from './ManageTournamentDetailsScreen'; 
 import Button from '../components/Button';
 import ChevronLeftIcon from '../components/icons/ChevronLeftIcon';
 import { AdminCourse } from '../data/mockDatabase';
@@ -16,7 +17,7 @@ interface AdminDashboardScreenProps {
   onBack: () => void;
 }
 
-type AdminView = 'TABS' | 'REGISTRATIONS';
+type AdminView = 'TABS' | 'DETAILS'; // Renomeado para 'DETAILS' para mais clareza
 type AdminTab = 'courses' | 'tournaments' | 'groups';
 
 const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({ onBack }) => {
@@ -50,14 +51,13 @@ const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({ onBack }) =
 
     const handleManageTournament = (tournament: any) => {
         setSelectedTournament(tournament);
-        setView('REGISTRATIONS');
+        setView('DETAILS'); // Mudar a view para 'DETAILS'
     };
 
     const handleBackToTabs = () => {
         setSelectedTournament(null);
         setView('TABS');
-        // Re-busca os torneios caso alguma informação tenha sido alterada
-        fetchCoursesForPanel(); 
+        // O fetchTournaments dentro de ManageTournaments irá tratar de se re-atualizar
     };
 
     const TabButton: React.FC<{ tabName: AdminTab; label: string }> = ({ tabName, label }) => (
@@ -71,9 +71,10 @@ const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({ onBack }) =
         </button>
     );
 
-    if (view === 'REGISTRATIONS' && selectedTournament) {
+    // --- ALTERAÇÃO 2: Renderizar o componente correto ---
+    if (view === 'DETAILS' && selectedTournament) {
         return (
-            <ManageRegistrations
+            <ManageTournamentDetailsScreen
                 tournament={selectedTournament}
                 onBack={handleBackToTabs}
             />

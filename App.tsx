@@ -1,4 +1,4 @@
-// App.tsx - VERSÃO COM LOGOUT CORRIGIDO
+// App.tsx - VERSÃO COMPLETA E ATUALIZADA
 
 import React, { useState, useMemo, useEffect, useContext } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
@@ -10,6 +10,7 @@ import Layout from "./components/Layout";
 import ResetPasswordScreen from "./screens/ResetPasswordScreen";
 import PrivacyPolicyScreen from "./screens/PrivacyPolicyScreen";
 import TermsOfUseScreen from "./screens/TermsOfUseScreen";
+import TournamentRegistrationScreen from "./screens/TournamentRegistrationScreen"; // Importação da nova tela
 
 // Componente para proteger rotas que precisam de login
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -32,6 +33,9 @@ const AppRoutes: React.FC = () => {
                 <Route path="/reset/:token" element={<ResetPasswordScreen />} />
                 <Route path="/privacy-policy" element={<PrivacyPolicyScreen />} />
                 <Route path="/terms-of-use" element={<TermsOfUseScreen />} />
+                
+                {/* Rota de Inscrição (requer login, mas o componente trata do redirecionamento) */}
+                <Route path="/register/:tournamentId" element={<TournamentRegistrationScreen />} />
 
                 {/* Rota Principal Protegida */}
                 <Route path="/" element={
@@ -72,7 +76,6 @@ const App: React.FC = () => {
             login: (loggedInUser: User) => setUser(loggedInUser),
             logout: () => {
                 setUser(null);
-                // --- ESTA É A CORREÇÃO CRÍTICA ---
                 // Limpa a "memória" da última tela visitada ao fazer logout
                 localStorage.removeItem('activeScreen');
                 localStorage.removeItem('activeAccessCode');

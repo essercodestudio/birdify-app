@@ -1,4 +1,4 @@
-// components/training/CreateTrainingModal.tsx
+// components/training/CreateTrainingModal.tsx - VERSÃO CORRIGIDA
 
 import React, { useState, useEffect, useContext } from 'react';
 import axios from 'axios';
@@ -21,19 +21,18 @@ const CreateTrainingModal: React.FC<CreateTrainingModalProps> = ({ onClose, onTr
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        if (!user) return;
         const fetchCourses = async () => {
             try {
-                const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/courses`, {
-                    params: { adminId: user.id }
-                });
+                // --- ALTERAÇÃO PRINCIPAL AQUI ---
+                // A chamada agora é feita para a rota pública, que não precisa de adminId
+                const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/courses/public`);
                 setCourses(response.data);
             } catch (err) {
                 setError("Não foi possível carregar a lista de campos.");
             }
         };
         fetchCourses();
-    }, [user]);
+    }, []); // Não precisa mais depender do 'user'
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();

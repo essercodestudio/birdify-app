@@ -1,6 +1,6 @@
-// components/admin/ManageTournaments.tsx - VERSÃO SIMPLIFICADA E UNIFICADA
+// components/admin/ManageTournaments.tsx - VERSÃO CORRIGIDA
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { AdminCourse } from '../../data/mockDatabase';
 import Button from '../Button';
@@ -22,9 +22,13 @@ const ManageTournaments: React.FC<ManageTournamentsProps> = ({ courses, adminUse
   const [selectedCourseId, setSelectedCourseId] = useState('');
   const [newTournamentModality, setNewTournamentModality] = useState('Golf');
 
-  const fetchTournaments = async () => {
+  // A função fetchTournaments foi envolvida em useCallback para otimização
+  const fetchTournaments = useCallback(async () => {
     if (!adminUser) return;
+    setLoading(true); // Inicia o loading aqui
     try {
+      // --- ALTERAÇÃO PRINCIPAL AQUI ---
+      // Agora passamos o adminId como um parâmetro na requisição GET
       const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/tournaments`, {
           params: { adminId: adminUser.id }
       });
@@ -34,11 +38,11 @@ const ManageTournaments: React.FC<ManageTournamentsProps> = ({ courses, adminUse
     } finally {
       setLoading(false);
     }
-  };
+  }, [adminUser]); // A função depende do adminUser
 
   useEffect(() => {
     fetchTournaments();
-  }, [adminUser]);
+  }, [fetchTournaments]); // O useEffect agora chama a função memorizada
 
   const handleCreateTournament = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -50,7 +54,6 @@ const ManageTournaments: React.FC<ManageTournamentsProps> = ({ courses, adminUse
         startTime: newTournamentTime,
         adminId: adminUser.id,
         modality: newTournamentModality,
-        // As categorias e opções avançadas serão definidas na tela de gestão
         categories: [], 
       };
       try {
@@ -104,7 +107,7 @@ const ManageTournaments: React.FC<ManageTournamentsProps> = ({ courses, adminUse
                 </tr>
               </thead>
               <tbody className="bg-gray-800 divide-y divide-gray-600">
-                {tournaments.map(t => (
+                {tournaments.length > 0 ? tournaments.map(t => (
                   <tr key={t.id}>
                     <td className="px-4 py-3 font-medium">{t.name}</td>
                     <td className="px-4 py-3">{new Date(t.date).toLocaleDateString('pt-BR', {timeZone: 'UTC'})}</td>
@@ -113,7 +116,11 @@ const ManageTournaments: React.FC<ManageTournamentsProps> = ({ courses, adminUse
                         <Button size="sm" variant="danger" onClick={() => handleDeleteTournament(t.id)}>Excluir</Button>
                     </td>
                   </tr>
-                ))}
+                )) : (
+                  <tr>
+                    <td colSpan={3} className="text-center text-gray-400 py-6">Nenhum torneio criado ainda.</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           )}
