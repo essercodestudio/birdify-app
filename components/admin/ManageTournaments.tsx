@@ -1,5 +1,3 @@
-// components/admin/ManageTournaments.tsx - VERSÃO CORRIGIDA
-
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { AdminCourse } from '../../data/mockDatabase';
@@ -22,13 +20,10 @@ const ManageTournaments: React.FC<ManageTournamentsProps> = ({ courses, adminUse
   const [selectedCourseId, setSelectedCourseId] = useState('');
   const [newTournamentModality, setNewTournamentModality] = useState('Golf');
 
-  // A função fetchTournaments foi envolvida em useCallback para otimização
   const fetchTournaments = useCallback(async () => {
     if (!adminUser) return;
-    setLoading(true); // Inicia o loading aqui
+    setLoading(true);
     try {
-      // --- ALTERAÇÃO PRINCIPAL AQUI ---
-      // Agora passamos o adminId como um parâmetro na requisição GET
       const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/tournaments`, {
           params: { adminId: adminUser.id }
       });
@@ -38,11 +33,11 @@ const ManageTournaments: React.FC<ManageTournamentsProps> = ({ courses, adminUse
     } finally {
       setLoading(false);
     }
-  }, [adminUser]); // A função depende do adminUser
+  }, [adminUser]);
 
   useEffect(() => {
     fetchTournaments();
-  }, [fetchTournaments]); // O useEffect agora chama a função memorizada
+  }, [fetchTournaments]);
 
   const handleCreateTournament = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -112,7 +107,16 @@ const ManageTournaments: React.FC<ManageTournamentsProps> = ({ courses, adminUse
                     <td className="px-4 py-3 font-medium">{t.name}</td>
                     <td className="px-4 py-3">{new Date(t.date).toLocaleDateString('pt-BR', {timeZone: 'UTC'})}</td>
                     <td className="px-4 py-3 text-center space-x-2">
-                        <Button size="sm" onClick={() => onManageTournament(t)}>Gerenciar Torneio</Button>
+                        {/* CORREÇÃO: Botão normal com debug */}
+                        <button 
+                          onClick={() => {
+                            console.log('🔄 BOTÃO CLICADO - Tournament:', t);
+                            onManageTournament(t);
+                          }}
+                          className="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700 text-sm"
+                        >
+                          Gerenciar Torneio
+                        </button>
                         <Button size="sm" variant="danger" onClick={() => handleDeleteTournament(t.id)}>Excluir</Button>
                     </td>
                   </tr>

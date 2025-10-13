@@ -1,5 +1,3 @@
-// screens/AdminDashboardScreen.tsx - VERSÃO CORRIGIDA PARA CHAMAR A TELA CERTA
-
 import React, { useState, useEffect, useCallback, useContext } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
@@ -7,8 +5,7 @@ import { AuthContext } from '../context/AuthContext';
 import ManageCourses from '../components/admin/ManageCourses';
 import ManageTournaments from '../components/admin/ManageTournaments';
 import ManageGroups from '../components/admin/ManageGroups';
-// --- ALTERAÇÃO 1: Importar o componente correto ---
-import ManageTournamentDetailsScreen from './ManageTournamentDetailsScreen'; 
+import ManageTournamentDetailsScreen from './ManageTournamentDetailsScreen';
 import Button from '../components/Button';
 import ChevronLeftIcon from '../components/icons/ChevronLeftIcon';
 import { AdminCourse } from '../data/mockDatabase';
@@ -17,14 +14,13 @@ interface AdminDashboardScreenProps {
   onBack: () => void;
 }
 
-type AdminView = 'TABS' | 'DETAILS'; // Renomeado para 'DETAILS' para mais clareza
 type AdminTab = 'courses' | 'tournaments' | 'groups';
 
 const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({ onBack }) => {
     const { user } = useContext(AuthContext);
     const navigate = useNavigate();
 
-    const [view, setView] = useState<AdminView>('TABS');
+    const [view, setView] = useState<'TABS' | 'DETAILS'>('TABS');
     const [selectedTournament, setSelectedTournament] = useState<any | null>(null);
     const [activeTab, setActiveTab] = useState<AdminTab>('tournaments');
     const [courses, setCourses] = useState<AdminCourse[]>([]);
@@ -51,14 +47,24 @@ const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({ onBack }) =
 
     const handleManageTournament = (tournament: any) => {
         setSelectedTournament(tournament);
-        setView('DETAILS'); // Mudar a view para 'DETAILS'
+        setView('DETAILS');
     };
 
     const handleBackToTabs = () => {
         setSelectedTournament(null);
         setView('TABS');
-        // O fetchTournaments dentro de ManageTournaments irá tratar de se re-atualizar
+        fetchCoursesForPanel(); // Recarregar dados se necessário
     };
+
+    // Renderizar tela de detalhes do torneio
+    if (view === 'DETAILS' && selectedTournament) {
+        return (
+            <ManageTournamentDetailsScreen
+                tournament={selectedTournament}
+                onBack={handleBackToTabs}
+            />
+        );
+    }
 
     const TabButton: React.FC<{ tabName: AdminTab; label: string }> = ({ tabName, label }) => (
         <button
@@ -70,16 +76,6 @@ const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({ onBack }) =
             {label}
         </button>
     );
-
-    // --- ALTERAÇÃO 2: Renderizar o componente correto ---
-    if (view === 'DETAILS' && selectedTournament) {
-        return (
-            <ManageTournamentDetailsScreen
-                tournament={selectedTournament}
-                onBack={handleBackToTabs}
-            />
-        );
-    }
 
     return (
         <div className="bg-gray-800 p-4 sm:p-6 rounded-lg shadow-xl space-y-6">

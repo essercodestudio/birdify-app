@@ -1,4 +1,4 @@
-// App.tsx - VERSÃO COMPLETA E ATUALIZADA
+// App.tsx - VERSÃO COMPLETA E ATUALIZADA COM ROTAS DE ADMIN
 
 import React, { useState, useMemo, useEffect, useContext } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
@@ -10,13 +10,26 @@ import Layout from "./components/Layout";
 import ResetPasswordScreen from "./screens/ResetPasswordScreen";
 import PrivacyPolicyScreen from "./screens/PrivacyPolicyScreen";
 import TermsOfUseScreen from "./screens/TermsOfUseScreen";
-import TournamentRegistrationScreen from "./screens/TournamentRegistrationScreen"; // Importação da nova tela
+import TournamentRegistrationScreen from "./screens/TournamentRegistrationScreen";
+// Importar as telas de administração
+import AdminDashboardScreen from "./screens/AdminDashboardScreen";
+import ManageTournamentDetailsScreen from "./screens/ManageTournamentDetailsScreen";
+import ManageGroups from "./components/admin/ManageGroups";
 
 // Componente para proteger rotas que precisam de login
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const { user } = useContext(AuthContext);
     if (!user) {
         return <Navigate to="/login" replace />;
+    }
+    return <>{children}</>;
+};
+
+// Componente para proteger rotas de admin (requer que user.isAdmin seja true)
+const AdminRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+    const { user } = useContext(AuthContext);
+    if (!user || !user.isAdmin) {
+        return <Navigate to="/" replace />;
     }
     return <>{children}</>;
 };
@@ -37,6 +50,23 @@ const AppRoutes: React.FC = () => {
                 {/* Rota de Inscrição (requer login, mas o componente trata do redirecionamento) */}
                 <Route path="/register/:tournamentId" element={<TournamentRegistrationScreen />} />
 
+                {/* Rotas de Administração */}
+                <Route path="/admin/dashboard" element={
+                    <AdminRoute>
+                        <AdminDashboardScreen />
+                    </AdminRoute>
+                } />
+                <Route path="/admin/tournaments/:tournamentId" element={
+                    <AdminRoute>
+                        <ManageTournamentDetailsScreen />
+                    </AdminRoute>
+                } />
+                <Route path="/admin/groups" element={
+                    <AdminRoute>
+                        <ManageGroups />
+                    </AdminRoute>
+                } />
+
                 {/* Rota Principal Protegida */}
                 <Route path="/" element={
                     <ProtectedRoute>
@@ -51,7 +81,7 @@ const AppRoutes: React.FC = () => {
     );
 };
 
-// Componente principal da aplicação
+// Componente principal da aplicação (mantém igual)
 const App: React.FC = () => {
     const [user, setUser] = useState<User | null>(() => {
         try {
