@@ -1,5 +1,3 @@
-// screens/ScorecardScreen.tsx - VERSÃO CORRIGIDA
-
 import React, { useState, useEffect, useCallback, useMemo, useContext } from 'react';
 import axios from 'axios';
 import { AuthContext } from '../context/AuthContext';
@@ -12,10 +10,12 @@ import MinusIcon from '../components/icons/MinusIcon';
 import LeaderboardScreen from './LeaderboardScreen';
 import PhotoIcon from '../components/icons/PhotoIcon';
 
+// Interface atualizada para incluir a nova prop
 interface ScorecardScreenProps { 
-  accessCode: string; 
-  onBack: () => void;
-  type: 'tournament' | 'training'; // <-- Prop para saber qual API chamar
+    accessCode: string; 
+    onBack: () => void;
+    type: 'tournament' | 'training';
+    onFinishTraining?: () => void; // Prop opcional para o redirecionamento
 }
 
 interface PlayerData { id: number; fullName: string; teeColor: string; }
@@ -43,7 +43,8 @@ const generateHoleSequence = (startHole: number): number[] => {
     return sequence;
 };
 
-const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAccessCode, onBack, type }) => {
+// Adicionada a nova prop onFinishTraining
+const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAccessCode, onBack, type, onFinishTraining }) => {
     const { user } = useContext(AuthContext);
     const [accessCode, setAccessCode] = useState(initialAccessCode);
     const [data, setData] = useState<ScorecardData | null>(null);
@@ -162,6 +163,7 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
         }
     };
     
+    // FUNÇÃO CORRIGIDA
     const handleFinishRound = async () => {
         if (!data) return;
         const confirmationMessage = isEditing 
@@ -174,15 +176,15 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
                 if (isEditing) {
                     for (const holeNum of holeSequence) {
                          if (isHoleComplete(holeNum, localScores, data.players)) {
-                            const scoresToSubmit = data.players.map(player => ({
-                                playerId: player.id,
-                                strokes: localScores[player.id][holeNum]
-                            }));
-                             await axios.post(`${import.meta.env.VITE_API_URL}/api/${scoreEndpoint}/hole`, {
-                                groupId: data.groupId,
-                                holeNumber: holeNum,
-                                scores: scoresToSubmit
-                            });
+                             const scoresToSubmit = data.players.map(player => ({
+                                 playerId: player.id,
+                                 strokes: localScores[player.id][holeNum]
+                             }));
+                              await axios.post(`${import.meta.env.VITE_API_URL}/api/${scoreEndpoint}/hole`, {
+                                 groupId: data.groupId,
+                                 holeNumber: holeNum,
+                                 scores: scoresToSubmit
+                              });
                          }
                     }
                 }
@@ -192,7 +194,14 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
                     await axios.post(`${import.meta.env.VITE_API_URL}/api/${finishEndpoint}/finish`, { groupId: data.groupId });
                 }
                 localStorage.removeItem('activeAccessCode');
-                onBack();
+
+                // <<-- AQUI ESTÁ A LÓGICA DE REDIRECIONAMENTO -->>
+                if (type === 'training' && onFinishTraining) {
+                    onFinishTraining(); // Chama a nova função para ir para o histórico
+                } else {
+                    onBack(); // Mantém o comportamento padrão para torneios
+                }
+
             } catch (error) {
                 alert('Não foi possível finalizar a rodada.');
             }

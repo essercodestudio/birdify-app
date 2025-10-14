@@ -1,5 +1,3 @@
-// screens/MainScreen.tsx - VERSÃO COMPLETA E CORRIGIDA
-
 import React, { useState, useContext, useCallback, useEffect } from "react";
 import axios from "axios";
 import { AuthContext } from "../context/AuthContext";
@@ -13,6 +11,7 @@ import Button from "../components/Button";
 import Spinner from "../components/Spinner";
 import ProfileScreen from "./ProfileScreen";
 import TrainingScreen from "./TrainingScreen";
+import TrainingHistoryScreen from "./TrainingHistoryScreen";
 
 type Screen =
   | "HOME"
@@ -25,6 +24,7 @@ type Screen =
   | "PROFILE"
   | "ADMIN_DASHBOARD"
   | "TRAINING"
+  | "TRAINING_HISTORY"
   | "HANDICAP_TRAINING"
   | "SCORECARD_TRAINING";
 
@@ -62,16 +62,17 @@ const MainScreen: React.FC = () => {
         setError("");
         setSelectedTournamentId(null);
     }, []);
+    
+    const handleFinishTrainingAndGoToHistory = useCallback(() => {
+        setScreen("TRAINING_HISTORY");
+    }, []);
 
     const handleSelectLeaderboard = async () => {
         if (!user) return;
         setLoading(true);
         try {
             const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/tournaments`, {
-                params: {
-                    status: 'active',
-                    modality: user.modality
-                }
+                params: { status: 'active', modality: user.modality }
             });
             setTournaments(response.data);
             setScreen("SELECT_LEADERBOARD");
@@ -109,23 +110,23 @@ const MainScreen: React.FC = () => {
     const handleTrainingHandicapsSubmitted = useCallback(() => {
         setScreen("SCORECARD_TRAINING");
     }, []);
-    
+
     if (!user) return null;
-    
+
     if (screen === "TRAINING") {
         return <TrainingScreen onBack={handleBackToHome} onStartScoring={handleStartTrainingScoring} />;
     }
     if (screen === "HANDICAP") {
-        return (<HandicapScreen accessCode={accessCode} onHandicapsSubmitted={handleHandicapsSubmitted} user={user} type="tournament" />);
+        return <HandicapScreen accessCode={accessCode} onHandicapsSubmitted={handleHandicapsSubmitted} user={user} type="tournament" />;
     }
     if (screen === "SCORECARD") {
-        return (<ScorecardScreen accessCode={accessCode} onBack={handleBackToHome} type="tournament"/>);
+        return <ScorecardScreen accessCode={accessCode} onBack={handleBackToHome} type="tournament"/>;
     }
     if (screen === "HANDICAP_TRAINING") {
-        return (<HandicapScreen accessCode={accessCode} onHandicapsSubmitted={handleTrainingHandicapsSubmitted} user={user} type="training" />);
+        return <HandicapScreen accessCode={accessCode} onHandicapsSubmitted={handleTrainingHandicapsSubmitted} user={user} type="training" />;
     }
     if (screen === "SCORECARD_TRAINING") {
-        return (<ScorecardScreen accessCode={accessCode} onBack={handleBackToHome} type="training"/>);
+        return <ScorecardScreen accessCode={accessCode} onBack={handleBackToHome} type="training" onFinishTraining={handleFinishTrainingAndGoToHistory} />;
     }
     if (screen === "ADMIN_DASHBOARD") {
         return <AdminDashboardScreen onBack={handleBackToHome} />;
@@ -139,6 +140,9 @@ const MainScreen: React.FC = () => {
     if (screen === "HISTORY") {
         return <HistoryScreen user={user} onBack={handleBackToHome} />;
     }
+    if (screen === "TRAINING_HISTORY") {
+        return <TrainingHistoryScreen onBack={handleBackToHome} />;
+    }
     if (screen === "LEADERBOARD" && selectedTournamentId) {
         return <LeaderboardScreen tournamentId={selectedTournamentId} onBack={handleBackToHome} />;
     }
@@ -146,7 +150,7 @@ const MainScreen: React.FC = () => {
         return (
             <div className="bg-gray-800 p-4 sm:p-6 rounded-lg shadow-xl">
                 <h1 className="text-3xl font-bold text-white mb-4">Selecione um Torneio</h1>
-                {loading ? (<Spinner />) : (
+                {loading ? <Spinner /> : (
                     <div className="space-y-3">
                         {tournaments.length > 0 ? tournaments.map((t) => (
                             <Button key={t.id} onClick={() => handleTournamentSelected(t.id.toString())} className="w-full text-left justify-start">
@@ -167,7 +171,7 @@ const MainScreen: React.FC = () => {
                 <p className="text-gray-400 mt-2">Modalidade: <span className="font-bold text-green-400">{user.modality}</span></p>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                 <div className="p-6 bg-gray-800 rounded-lg shadow-lg">
+                <div className="p-6 bg-gray-800 rounded-lg shadow-lg">
                     <h2 className="text-2xl font-bold text-green-400 mb-4">Marcar Pontuação (Torneio)</h2>
                     <p className="text-gray-300 mb-4">Insira o código de acesso para um torneio oficial.</p>
                     <div className="flex flex-col sm:flex-row gap-2">
@@ -190,8 +194,11 @@ const MainScreen: React.FC = () => {
                 </div>
                 <div className="p-6 bg-gray-800 rounded-lg shadow-lg">
                     <h2 className="text-2xl font-bold text-green-400 mb-4">Meu Histórico</h2>
-                    <p className="text-gray-300 mb-4">Veja os resultados dos seus torneios finalizados.</p>
-                    <Button onClick={() => setScreen("HISTORY")} className="w-full sm:w-auto">Acessar Histórico</Button>
+                    <p className="text-gray-300 mb-4">Consulte os seus resultados finalizados.</p>
+                    <div className="flex flex-col gap-2">
+                        <Button onClick={() => setScreen("HISTORY")} className="w-full">Histórico de Torneios</Button>
+                        <Button onClick={() => setScreen("TRAINING_HISTORY")} variant="secondary" className="w-full">Histórico de Treinos</Button>
+                    </div>
                 </div>
                 <div className="p-6 bg-gray-800 rounded-lg shadow-lg">
                     <h2 className="text-2xl font-bold text-green-400 mb-4">Minhas Estatísticas</h2>

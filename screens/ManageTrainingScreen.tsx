@@ -1,6 +1,6 @@
-// screens/ManageTrainingScreen.tsx - VERSÃO CORRETA E FINAL
+// screens/ManageTrainingScreen.tsx
 
-import React, { useState, useEffect, useContext } from 'react';
+import React, { useState, useEffect, useContext, useCallback } from 'react';
 import axios from 'axios';
 import { AuthContext } from '../context/AuthContext';
 import Button from '../components/Button';
@@ -17,12 +17,25 @@ const ManageTrainingScreen: React.FC<ManageTrainingScreenProps> = ({ trainingDat
     const [participants, setParticipants] = useState<any[]>([]);
     const [searchTerm, setSearchTerm] = useState('');
     const [searchResults, setSearchResults] = useState<any[]>([]);
+    const [isSearching, setIsSearching] = useState(false);
+    const [isLoading, setIsLoading] = useState(true);
+
+    const fetchParticipants = useCallback(async () => {
+        try {
+            const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/trainings/groups/${trainingData.trainingGroupId}/participants`);
+            setParticipants(response.data);
+        } catch (error) {
+            console.error("Erro ao buscar participantes", error);
+        } finally {
+            setIsLoading(false);
+        }
+    }, [trainingData.trainingGroupId]);
 
     useEffect(() => {
-        if (user) {
-            setParticipants([{ ...user, invitationStatus: 'accepted' }]);
-        }
-    }, [user]);
+        fetchParticipants();
+        const interval = setInterval(fetchParticipants, 5000);
+        return () => clearInterval(interval);
+    }, [fetchParticipants]);
 
     useEffect(() => {
         if (searchTerm.length < 3) {
@@ -30,57 +43,61 @@ const ManageTrainingScreen: React.FC<ManageTrainingScreenProps> = ({ trainingDat
             return;
         }
         const searchPlayers = async () => {
+            setIsSearching(true);
             try {
                 const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/players/search`, {
-                    params: { name: searchTerm, excludeId: user!.id }
+                    params: { search: searchTerm, excludeTrainingGroup: trainingData.trainingGroupId }
                 });
-                const invitedIds = new Set(participants.map(p => p.id));
-                setSearchResults(response.data.filter((p: any) => !invitedIds.has(p.id)));
+                setSearchResults(response.data);
             } catch (error) {
-                console.error("Erro ao buscar jogadores para convite", error)
+                console.error("Erro ao buscar jogadores", error);
+            } finally {
+                setIsSearching(false);
             }
         };
         const debounce = setTimeout(searchPlayers, 300);
         return () => clearTimeout(debounce);
-    }, [searchTerm, user, participants]);
+    }, [searchTerm, trainingData.trainingGroupId]);
 
-    const handleInvite = (player: any) => {
-        setParticipants([...participants, { ...player, invitationStatus: 'pending' }]);
-        setSearchTerm('');
-        setSearchResults([]);
+    const handleInvite = async (player: any) => {
+        try {
+            await axios.post(`${import.meta.env.VITE_API_URL}/api/trainings/groups/${trainingData.trainingGroupId}/invite`, {
+                playerIds: [player.id]
+            });
+            setParticipants(prev => [...prev, { ...player, invitationStatus: 'pending' }]);
+            setSearchTerm('');
+            setSearchResults([]);
+        } catch (error) {
+            alert("Erro ao enviar convite.");
+        }
     };
     
-    const sendInvitesAndStart = async () => {
-        const playerIdsToInvite = participants
-            .filter(p => p.id !== user!.id)
-            .map(p => p.id);
-
-        if (playerIdsToInvite.length > 0) {
-            try {
-                await axios.post(`${import.meta.env.VITE_API_URL}/api/trainings/groups/${trainingData.trainingGroupId}/invite`, {
-                    playerIds: playerIdsToInvite
-                });
-            } catch (error) {
-                alert("Erro ao enviar convites.");
-                return;
-            }
+    const handleStart = () => {
+        if (window.confirm("Tem a certeza de que quer iniciar a partida? Não terá como apagar após criada.")) {
+            onStartTraining(trainingData.accessCode);
         }
-        alert("Treino iniciado e convites enviados! Utilize o código de acesso para marcar os scores.");
-        onStartTraining(trainingData.accessCode);
     };
+
+    if (isLoading) return <Spinner />;
 
     return (
         <div className="bg-gray-800 p-6 rounded-lg shadow-xl space-y-6">
-            <h2 className="text-2xl font-bold text-white">Preparar Treino</h2>
+            <h2 className="text-2xl font-bold text-white">Gerir Treino</h2>
+            <p className="text-gray-400">Convide jogadores e inicie a partida quando estiver pronto.</p>
+            
             <div>
                 <h3 className="text-lg font-bold text-green-400 mb-2">Convidar Jogadores</h3>
-                <input 
-                    type="text"
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    placeholder="Digite o nome de um jogador (mín. 3 letras)..."
-                    className="w-full px-3 py-2 border border-gray-600 bg-gray-900 text-white rounded-md"
-                />
+                <div className="relative">
+                    <input 
+                        type="text"
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        placeholder="Procurar jogador (mín. 3 letras)..."
+                        className="w-full input"
+                        style={{ colorScheme: 'dark' }} // <-- CORREÇÃO APLICADA AQUI
+                    />
+                    {isSearching && <div className="absolute right-3 top-2"><Spinner size="sm" /></div>}
+                </div>
                 {searchResults.length > 0 && (
                     <ul className="bg-gray-700 rounded-md mt-2 max-h-40 overflow-y-auto">
                         {searchResults.map(player => (
@@ -89,22 +106,28 @@ const ManageTrainingScreen: React.FC<ManageTrainingScreenProps> = ({ trainingDat
                     </ul>
                 )}
             </div>
+            
             <div>
-                <h3 className="text-lg font-bold text-green-400 mb-2">Participantes</h3>
+                <h3 className="text-lg font-bold text-green-400 mb-2">Participantes ({participants.length})</h3>
                 <div className="space-y-2">
                     {participants.map(p => (
                         <div key={p.id} className="bg-gray-700 p-2 rounded-md flex justify-between items-center">
                             <span>{p.fullName}</span>
-                            <span className={`text-xs px-2 py-0.5 rounded-full ${p.invitationStatus === 'accepted' ? 'bg-green-500/20 text-green-300' : 'bg-yellow-500/20 text-yellow-300'}`}>
+                            <span className={`text-xs px-2 py-0.5 rounded-full ${
+                                p.invitationStatus === 'accepted' ? 'bg-green-500/20 text-green-300' 
+                                : 'bg-yellow-500/20 text-yellow-300'}`}>
                                 {p.invitationStatus === 'accepted' ? 'Confirmado' : 'Pendente'}
                             </span>
                         </div>
                     ))}
                 </div>
             </div>
+
             <div className="flex justify-between items-center pt-4 border-t border-gray-700">
-                <Button variant="secondary" onClick={onBack}>Cancelar</Button>
-                <Button onClick={sendInvitesAndStart}>Iniciar Treino e Enviar Convites</Button>
+                <Button variant="secondary" onClick={onBack}>Voltar</Button>
+                <Button onClick={handleStart}>
+                    Iniciar Treino
+                </Button>
             </div>
         </div>
     );

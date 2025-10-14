@@ -1,12 +1,14 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useContext, useCallback, useMemo } from 'react';
 import axios from 'axios';
-// import "./ManageGroups.css";
+import Button from '../Button';
+import Spinner from '../Spinner';
+import { AuthContext } from '../../context/AuthContext';
 
+// Interfaces
 interface Tournament {
   id: number;
   name: string;
   date: string;
-  courseId: number;
 }
 
 interface Player {
@@ -14,347 +16,250 @@ interface Player {
   registrationId: number;
   fullName: string;
   gender: string;
-  paymentStatus: string;
 }
 
 interface Group {
-  id: number;
-  tournamentId: number;
-  startHole: number;
-  accessCode: string;
-  players: Player[];
+    id: number;
+    startHole: number;
+    accessCode: string;
+    status: 'pending' | 'completed';
+    players: {
+        playerId: number;
+        fullName: string;
+        isResponsible: boolean;
+        teeColor: string;
+    }[];
 }
 
 const ManageGroups: React.FC = () => {
-  const [tournaments, setTournaments] = useState<Tournament[]>([]);
-  const [selectedTournament, setSelectedTournament] = useState<string>('');
-  const [confirmedPlayers, setConfirmedPlayers] = useState<Player[]>([]);
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [selectedPlayers, setSelectedPlayers] = useState<number[]>([]);
-  const [startHole, setStartHole] = useState<number>(1);
-  const [loading, setLoading] = useState(false);
-  const [adminId, setAdminId] = useState<string>('');
+    const { user } = useContext(AuthContext);
 
-  // Buscar ID do admin do localStorage
-  useEffect(() => {
-    const userData = localStorage.getItem('user');
-    if (userData) {
-      const user = JSON.parse(userData);
-      setAdminId(user.id);
-    }
-  }, []);
+    // Estados para dados da API
+    const [tournaments, setTournaments] = useState<Tournament[]>([]);
+    const [selectedTournament, setSelectedTournament] = useState<string>('');
+    const [confirmedPlayers, setConfirmedPlayers] = useState<Player[]>([]);
+    const [groups, setGroups] = useState<Group[]>([]);
+    const [availableTees, setAvailableTees] = useState<string[]>([]);
 
-  // Buscar torneios do admin
-  useEffect(() => {
-    const fetchTournaments = async () => {
-      if (!adminId) return;
-      
-      try {
+    // Estados de controlo da UI
+    const [loading, setLoading] = useState(false);
+    const [generatedCode, setGeneratedCode] = useState<string | null>(null);
+
+    // Estados do formulário de criação
+    const [selectedPlayers, setSelectedPlayers] = useState<number[]>([]);
+    const [responsiblePlayerId, setResponsiblePlayerId] = useState<number | null>(null);
+    const [startHole, setStartHole] = useState<number>(1);
+    const [playerTeeSelections, setPlayerTeeSelections] = useState<Record<number, string>>({});
+    const [searchTerm, setSearchTerm] = useState('');
+
+    const fetchTournaments = useCallback(async () => {
+        if (!user) return;
         setLoading(true);
-        const response = await axios.get(`/api/tournaments?adminId=${adminId}`);
-        setTournaments(response.data);
-      } catch (error) {
-        console.error('Erro ao buscar torneios:', error);
-        alert('Erro ao carregar torneios');
-      } finally {
-        setLoading(false);
-      }
+        try {
+            const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/tournaments?adminId=${user.id}`);
+            setTournaments(response.data);
+        } catch (error) {
+            console.error('Erro ao buscar torneios:', error);
+        } finally {
+            setLoading(false);
+        }
+    }, [user]);
+
+    const fetchTournamentData = useCallback(async () => {
+        if (!selectedTournament) {
+            setConfirmedPlayers([]);
+            setGroups([]);
+            setAvailableTees([]);
+            return;
+        }
+        setLoading(true);
+        try {
+            const [playersRes, groupsRes, teesRes] = await Promise.all([
+                axios.get(`${import.meta.env.VITE_API_URL}/api/tournaments/${selectedTournament}/confirmed-players`),
+                axios.get(`${import.meta.env.VITE_API_URL}/api/tournaments/${selectedTournament}/groups`),
+                axios.get(`${import.meta.env.VITE_API_URL}/api/tournaments/${selectedTournament}/tees`)
+            ]);
+            setConfirmedPlayers(playersRes.data);
+            setGroups(groupsRes.data);
+            setAvailableTees(teesRes.data.map((t: { color: string }) => t.color));
+        } catch (error) {
+            console.error('Erro ao buscar dados do torneio:', error);
+        } finally {
+            setLoading(false);
+        }
+    }, [selectedTournament]);
+
+    useEffect(() => { fetchTournaments(); }, [fetchTournaments]);
+    useEffect(() => { fetchTournamentData(); }, [fetchTournamentData]);
+
+    const togglePlayerSelection = (playerId: number) => {
+        setSelectedPlayers(prev => {
+            const newSelection = prev.includes(playerId) ? prev.filter(id => id !== playerId) : [...prev, playerId];
+            if (responsiblePlayerId === playerId && !newSelection.includes(playerId)) {
+                setResponsiblePlayerId(null);
+            }
+            // Remove a seleção de tee se o jogador for desmarcado
+            if (!newSelection.includes(playerId)) {
+                setPlayerTeeSelections(current => {
+                    const newTees = { ...current };
+                    delete newTees[playerId];
+                    return newTees;
+                });
+            }
+            return newSelection;
+        });
     };
 
-    fetchTournaments();
-  }, [adminId]);
+    const handleCreateGroup = async () => {
+        if (selectedPlayers.length === 0 || !responsiblePlayerId) {
+            alert('Selecione jogadores e defina um marcador.');
+            return;
+        }
+        const allTeesSelected = selectedPlayers.every(id => playerTeeSelections[id]);
+        if (!allTeesSelected) {
+            alert('Por favor, selecione uma cor de tee para cada jogador no grupo.');
+            return;
+        }
 
-  // Buscar jogadores confirmados quando selecionar um torneio
-  useEffect(() => {
-    const fetchConfirmedPlayers = async () => {
-      if (!selectedTournament) {
-        setConfirmedPlayers([]);
-        setGroups([]);
-        return;
-      }
+        try {
+            const playersData = selectedPlayers.map(playerId => ({
+                id: playerId,
+                teeColor: playerTeeSelections[playerId]
+            }));
 
-      try {
-        setLoading(true);
-        const response = await axios.get(`/api/tournaments/${selectedTournament}/confirmed-players`);
-        setConfirmedPlayers(response.data);
-        
-        // Buscar grupos existentes
-        const groupsResponse = await axios.get(`/api/tournaments/${selectedTournament}/groups`);
-        setGroups(groupsResponse.data);
-      } catch (error) {
-        console.error('Erro ao buscar dados:', error);
-        setConfirmedPlayers([]);
-        setGroups([]);
-      } finally {
-        setLoading(false);
-      }
+            const response = await axios.post(`${import.meta.env.VITE_API_URL}/api/groups`, {
+                tournamentId: selectedTournament,
+                startHole,
+                players: playersData,
+                responsiblePlayerId,
+                category: 'default'
+            });
+            setGeneratedCode(response.data.accessCode);
+            setSelectedPlayers([]);
+            setResponsiblePlayerId(null);
+            setPlayerTeeSelections({});
+            fetchTournamentData();
+        } catch (error) {
+            console.error('Erro ao criar grupo:', error);
+            alert('Erro ao criar grupo. Verifique o console do backend.');
+        }
     };
 
-    fetchConfirmedPlayers();
-  }, [selectedTournament]);
+    const handleDeleteGroup = async (groupId: number) => {
+        if (!window.confirm('Tem certeza que deseja apagar este grupo?')) return;
+        try {
+            await axios.delete(`${import.meta.env.VITE_API_URL}/api/groups/${groupId}`);
+            fetchTournamentData();
+        } catch (error) {
+            alert('Erro ao apagar grupo.');
+        }
+    };
 
-  // Buscar grupos do torneio
-  const fetchGroups = async () => {
-    if (!selectedTournament) return;
-    
-    try {
-      const response = await axios.get(`/api/tournaments/${selectedTournament}/groups`);
-      setGroups(response.data);
-    } catch (error) {
-      console.error('Erro ao buscar grupos:', error);
-    }
-  };
+    const playersInGroups = useMemo(() => new Set(groups.flatMap(g => g.players.map(p => p.playerId))), [groups]);
+    const availablePlayers = confirmedPlayers.filter(p => !playersInGroups.has(p.playerId));
+    const filteredAvailablePlayers = availablePlayers.filter(p => p.fullName.toLowerCase().includes(searchTerm.toLowerCase()));
 
-  // Alternar seleção de jogador
-  const togglePlayerSelection = (playerId: number) => {
-    setSelectedPlayers(prev => 
-      prev.includes(playerId) 
-        ? prev.filter(id => id !== playerId)
-        : [...prev, playerId]
-    );
-  };
-
-  // Criar novo grupo
-  const handleCreateGroup = async () => {
-    if (selectedPlayers.length === 0) {
-      alert('Selecione pelo menos um jogador para criar o grupo');
-      return;
-    }
-
-    if (!startHole || startHole < 1 || startHole > 18) {
-      alert('Selecione um buraco de início válido (1-18)');
-      return;
-    }
-
-    try {
-      const playersData = selectedPlayers.map(playerId => {
-        const player = confirmedPlayers.find(p => p.playerId === playerId);
-        return {
-          id: playerId,
-          teeColor: 'white' // Cor padrão, pode ser ajustada depois
-        };
-      });
-
-      const response = await axios.post('/api/groups', {
-        tournamentId: selectedTournament,
-        startHole: startHole,
-        players: playersData,
-        responsiblePlayerId: selectedPlayers[0], // Primeiro jogador como responsável
-        category: 'default'
-      });
-
-      alert(`Grupo criado com sucesso! Código de acesso: ${response.data.accessCode}`);
-      
-      // Limpar seleção e recarregar grupos
-      setSelectedPlayers([]);
-      fetchGroups();
-    } catch (error) {
-      console.error('Erro ao criar grupo:', error);
-      alert('Erro ao criar grupo');
-    }
-  };
-
-  // Apagar grupo
-  const handleDeleteGroup = async (groupId: number) => {
-    if (!confirm('Tem certeza que deseja apagar este grupo?')) return;
-
-    try {
-      await axios.delete(`/api/groups/${groupId}`);
-      alert('Grupo apagado com sucesso!');
-      fetchGroups();
-    } catch (error) {
-      console.error('Erro ao apagar grupo:', error);
-      alert('Erro ao apagar grupo');
-    }
-  };
-
-  // Finalizar grupo
-  const handleFinishGroup = async (groupId: number) => {
-    try {
-      await axios.post('/api/groups/finish', { groupId });
-      alert('Grupo finalizado com sucesso!');
-      fetchGroups();
-    } catch (error) {
-      console.error('Erro ao finalizar grupo:', error);
-      alert('Erro ao finalizar grupo');
-    }
-  };
-
-  return (
-    <div className="manage-groups-container">
-      <div className="header">
-        <h1>Gerenciar Grupos</h1>
-        <p>Crie e gerencie grupos de jogadores para os torneios</p>
-      </div>
-
-      {/* Seleção de Torneio */}
-      <div className="section-card">
-        <h2>1. Selecionar Torneio</h2>
-        <div className="form-group">
-          <label htmlFor="tournament-select">Torneio: </label>
-          <select 
-            id="tournament-select"
-            value={selectedTournament} 
-            onChange={(e) => setSelectedTournament(e.target.value)}
-            disabled={loading}
-          >
-            <option value="">-- Selecione um torneio --</option>
-            {tournaments.map(tournament => (
-              <option key={tournament.id} value={tournament.id}>
-                {tournament.name} - {new Date(tournament.date).toLocaleDateString('pt-BR')}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      {selectedTournament && (
-        <>
-          {/* Jogadores Confirmados */}
-          <div className="section-card">
-            <h2>2. Jogadores com Pagamento Confirmado ({confirmedPlayers.length})</h2>
-            {loading ? (
-              <div className="loading">Carregando jogadores...</div>
-            ) : confirmedPlayers.length > 0 ? (
-              <div className="players-grid">
-                {confirmedPlayers.map(player => (
-                  <div 
-                    key={player.registrationId}
-                    className={`player-card ${selectedPlayers.includes(player.playerId) ? 'selected' : ''}`}
-                    onClick={() => togglePlayerSelection(player.playerId)}
-                  >
-                    <div className="player-info">
-                      <strong>{player.fullName}</strong>
-                      <span className="player-gender">{player.gender === 'Male' ? '♂' : '♀'}</span>
-                    </div>
-                    <div className="player-status confirmed">
-                      ✅ Confirmado
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="empty-state">
-                <p>Nenhum jogador com pagamento confirmado para este torneio.</p>
-                <p>Os jogadores aparecerão aqui após confirmarem o pagamento.</p>
-              </div>
-            )}
-          </div>
-
-          {/* Criar Novo Grupo */}
-          {confirmedPlayers.length > 0 && (
-            <div className="section-card">
-              <h2>3. Criar Novo Grupo</h2>
-              <div className="create-group-form">
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Buraco de Início:</label>
-                    <select 
-                      value={startHole}
-                      onChange={(e) => setStartHole(Number(e.target.value))}
-                    >
-                      {Array.from({ length: 18 }, (_, i) => i + 1).map(hole => (
-                        <option key={hole} value={hole}>
-                          Buraco {hole}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  
-                  <div className="form-group">
-                    <label>Jogadores Selecionados:</label>
-                    <div className="selected-count">
-                      {selectedPlayers.length} jogador(es) selecionado(s)
-                    </div>
-                  </div>
-                </div>
-
-                <button 
-                  onClick={handleCreateGroup}
-                  disabled={selectedPlayers.length === 0}
-                  className="btn btn-primary"
-                >
-                  ➕ Criar Grupo
-                </button>
-              </div>
+    return (
+        <div className="manage-groups-container space-y-8">
+            <div className="header p-6 bg-gray-700/50 rounded-lg">
+                <h1 className="text-xl font-bold text-green-400">Gerenciar Grupos</h1>
+                <p className="text-sm text-gray-300">Crie e gerencie os grupos para os torneios.</p>
             </div>
-          )}
 
-          {/* Grupos Existentes */}
-          <div className="section-card">
-            <h2>Grupos do Torneio ({groups.length})</h2>
-            {groups.length > 0 ? (
-              <div className="groups-list">
-                {groups.map(group => (
-                  <div key={group.id} className="group-card">
-                    <div className="group-header">
-                      <h3>Grupo #{group.id}</h3>
-                      <div className="group-actions">
-                        <span className="access-code">Código: {group.accessCode}</span>
-                        <button 
-                          onClick={() => handleFinishGroup(group.id)}
-                          className="btn btn-success btn-sm"
-                          title="Finalizar grupo"
-                        >
-                          ✅ Finalizar
-                        </button>
-                        <button 
-                          onClick={() => handleDeleteGroup(group.id)}
-                          className="btn btn-danger btn-sm"
-                          title="Apagar grupo"
-                        >
-                          🗑️ Apagar
-                        </button>
-                      </div>
-                    </div>
-                    
-                    <div className="group-details">
-                      <div className="group-info">
-                        <span><strong>Buraco:</strong> {group.startHole}</span>
-                        <span><strong>Jogadores:</strong> {group.players?.length || 0}</span>
-                        <span className={`status ${group.status === 'completed' ? 'completed' : 'active'}`}>
-                          {group.status === 'completed' ? '✅ Finalizado' : '🟢 Ativo'}
-                        </span>
-                      </div>
+            <div className="section-card p-6 bg-gray-700/50 rounded-lg">
+                <h2 className="font-bold text-lg mb-2">1. Selecionar Torneio</h2>
+                <select value={selectedTournament} onChange={(e) => setSelectedTournament(e.target.value)} disabled={loading} className="input w-full sm:w-1/2">
+                    <option value="">-- Selecione um torneio --</option>
+                    {tournaments.map(tournament => (
+                        <option key={tournament.id} value={tournament.id}>
+                            {tournament.name} - {new Date(tournament.date).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}
+                        </option>
+                    ))}
+                </select>
+            </div>
 
-                      {group.players && group.players.length > 0 && (
-                        <div className="group-players">
-                          <h4>Jogadores:</h4>
-                          <ul>
-                            {group.players.map(player => (
-                              <li key={player.playerId}>
-                                {player.fullName} 
-                                {player.isResponsible && <span className="responsible"> 👑</span>}
-                                <span className={`tee-color ${player.teeColor?.toLowerCase()}`}>
-                                  ({player.teeColor})
-                                </span>
-                              </li>
-                            ))}
-                          </ul>
+            {selectedTournament && (loading ? <Spinner /> :
+                <>
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                        <div className="lg:col-span-1 p-6 bg-gray-700/50 rounded-lg flex flex-col">
+                            <h3 className="text-lg font-bold text-green-400">2. Jogadores Disponíveis ({availablePlayers.length})</h3>
+                            <input type="text" placeholder="Buscar jogador..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="input w-full my-4" />
+                            <div className="space-y-2 flex-grow overflow-y-auto pr-2">
+                                {filteredAvailablePlayers.map(player => (
+                                    <div key={player.registrationId} className={`p-2 rounded flex items-center gap-2 cursor-pointer ${selectedPlayers.includes(player.playerId) ? 'bg-green-800' : 'bg-gray-800 hover:bg-gray-600'}`} onClick={() => togglePlayerSelection(player.playerId)}>
+                                        <input type="checkbox" checked={selectedPlayers.includes(player.playerId)} readOnly className="h-4 w-4 bg-gray-900 border-gray-600 rounded text-green-600" />
+                                        <span>{player.fullName}</span>
+                                    </div>
+                                ))}
+                            </div>
                         </div>
-                      )}
+                        <div className="lg:col-span-2 p-6 bg-gray-700/50 rounded-lg">
+                            <h3 className="text-lg font-bold text-green-400 mb-4">3. Criar Novo Grupo</h3>
+                            <div className="space-y-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-300 mb-1">Jogadores Selecionados ({selectedPlayers.length})</label>
+                                    <div className="p-2 bg-gray-900/50 rounded-md min-h-[50px] space-y-2">
+                                        {selectedPlayers.map(id => {
+                                            const player = confirmedPlayers.find(p => p.playerId === id);
+                                            return (
+                                                <div key={id} className="flex flex-col sm:flex-row items-center justify-between bg-gray-800 p-2 rounded gap-2">
+                                                    <span className="flex-grow">{player?.fullName}</span>
+                                                    <div className="flex items-center gap-4">
+                                                        <select value={playerTeeSelections[id] || ''} onChange={(e) => setPlayerTeeSelections(prev => ({...prev, [id]: e.target.value}))} className="input text-sm py-1">
+                                                            <option value="">-- Tee --</option>
+                                                            {availableTees.map(color => <option key={color} value={color}>{color}</option>)}
+                                                        </select>
+                                                        <label className="text-xs flex items-center gap-1 cursor-pointer whitespace-nowrap"><input type="radio" name="responsible" checked={responsiblePlayerId === id} onChange={() => setResponsiblePlayerId(id)} /> Marcador</label>
+                                                    </div>
+                                                </div>
+                                            )
+                                        })}
+                                    </div>
+                                </div>
+                                <div className="form-group">
+                                    <label className="text-sm">Buraco de Início:</label>
+                                    <select value={startHole} onChange={(e) => setStartHole(Number(e.target.value))} className="input ml-2">
+                                        {Array.from({ length: 18 }, (_, i) => i + 1).map(hole => (
+                                            <option key={hole} value={hole}>Buraco {hole}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <Button onClick={handleCreateGroup} disabled={selectedPlayers.length === 0 || !responsiblePlayerId}>➕ Criar Grupo</Button>
+                            </div>
+                        </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="empty-state">
-                <p>Nenhum grupo criado para este torneio.</p>
-                <p>Selecione jogadores acima para criar o primeiro grupo.</p>
-              </div>
-            )}
-          </div>
-        </>
-      )}
 
-      {!selectedTournament && tournaments.length === 0 && !loading && (
-        <div className="empty-state">
-          <p>Nenhum torneio encontrado.</p>
-          <p>Crie torneios primeiro para poder gerenciar grupos.</p>
+                    <div className="section-card p-6 bg-gray-700/50 rounded-lg">
+                        <h2 className="font-bold text-lg mb-2">Grupos do Torneio ({groups.length})</h2>
+                        <div className="groups-list space-y-4">
+                            {groups.map(group => (
+                                <div key={group.id} className="group-card bg-gray-800 p-4 rounded-lg">
+                                    <div className="group-header flex justify-between items-start">
+                                        <div>
+                                            <h3 className="font-bold">Grupo (Início Buraco {group.startHole})</h3>
+                                            <span className="access-code text-sm font-mono bg-gray-900 px-2 py-1 rounded">Código: {group.accessCode}</span>
+                                        </div>
+                                        <Button size="sm" variant="danger" onClick={() => handleDeleteGroup(group.id)}>Apagar</Button>
+                                    </div>
+                                    <div className="group-players mt-2">
+                                        <h4 className="text-sm font-semibold">Jogadores:</h4>
+                                        <ul>
+                                            {group.players.map(player => (
+                                                <li key={player.playerId}>
+                                                    {player.fullName}
+                                                    {player.isResponsible && <span className="text-xs text-green-400"> (Marcador)</span>}
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </>
+            )}
         </div>
-      )}
-    </div>
-  );
+    );
 };
 
 export default ManageGroups;
