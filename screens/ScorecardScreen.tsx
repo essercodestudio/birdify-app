@@ -1,3 +1,6 @@
+// essercodestudio/birdify-app/birdify-app-5edd58081f645dcc34f897e15210f0f29db5dc87/screens/ScorecardScreen.tsx
+// VERSÃO COMPLETA COM A NOVA INTERFACE
+
 import React, { useState, useEffect, useCallback, useMemo, useContext } from 'react';
 import axios from 'axios';
 import { AuthContext } from '../context/AuthContext';
@@ -10,12 +13,11 @@ import MinusIcon from '../components/icons/MinusIcon';
 import LeaderboardScreen from './LeaderboardScreen';
 import PhotoIcon from '../components/icons/PhotoIcon';
 
-// Interface atualizada para incluir a nova prop
 interface ScorecardScreenProps { 
     accessCode: string; 
     onBack: () => void;
     type: 'tournament' | 'training';
-    onFinishTraining?: () => void; // Prop opcional para o redirecionamento
+    onFinishTraining?: () => void;
 }
 
 interface PlayerData { id: number; fullName: string; teeColor: string; }
@@ -43,7 +45,6 @@ const generateHoleSequence = (startHole: number): number[] => {
     return sequence;
 };
 
-// Adicionada a nova prop onFinishTraining
 const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAccessCode, onBack, type, onFinishTraining }) => {
     const { user } = useContext(AuthContext);
     const [accessCode, setAccessCode] = useState(initialAccessCode);
@@ -78,7 +79,6 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
         
         try {
             setLoading(true);
-            
             const url = type === 'tournament'
                 ? `${import.meta.env.VITE_API_URL}/api/scorecard/${accessCode}?playerId=${user.id}`
                 : `${import.meta.env.VITE_API_URL}/api/trainings/scorecard/${accessCode}?playerId=${user.id}`;
@@ -113,7 +113,7 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
             }
             setError(null);
           } catch (err: any) {
-              setError('Não foi possível carregar os dados do scorecard.');
+              setError('Não foi possível carregar os dados do scorecard. Verifique o código de acesso ou a sua conexão.');
               localStorage.removeItem('activeAccessCode');
           } finally {
             setLoading(false);
@@ -163,7 +163,6 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
         }
     };
     
-    // FUNÇÃO CORRIGIDA
     const handleFinishRound = async () => {
         if (!data) return;
         const confirmationMessage = isEditing 
@@ -195,11 +194,10 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
                 }
                 localStorage.removeItem('activeAccessCode');
 
-                // <<-- AQUI ESTÁ A LÓGICA DE REDIRECIONAMENTO -->>
                 if (type === 'training' && onFinishTraining) {
-                    onFinishTraining(); // Chama a nova função para ir para o histórico
+                    onFinishTraining();
                 } else {
-                    onBack(); // Mantém o comportamento padrão para torneios
+                    onBack();
                 }
 
             } catch (error) {
@@ -227,9 +225,9 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
         });
     }, [data, localScores, holeSequence]);
 
-    if (loading) return <Spinner />;
-    if (error) return <div className="text-red-400 text-center p-6 bg-red-900/50 rounded-lg">{error}</div>;
-    if (!data) return <p className="text-gray-400 text-center">A carregar dados do grupo...</p>;
+    if (loading) return <div className="card"><Spinner /></div>;
+    if (error) return <div className="card text-red-400 text-center p-6 bg-red-900/50 rounded-lg">{error}</div>;
+    if (!data) return <div className="card text-gray-400 text-center">A carregar dados do grupo...</div>;
 
     if (view === 'LEADERBOARD' && type === 'tournament') {
         return <LeaderboardScreen tournamentId={data.tournamentId.toString()} onBack={() => setView('SCORECARD')} />;
@@ -237,7 +235,7 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
 
     if (view === 'SUMMARY') {
         return (
-            <div className="bg-gray-800 p-4 sm:p-6 rounded-lg shadow-xl">
+            <div className="card">
                 <h1 className="text-3xl font-bold text-white mb-2">Resumo da Rodada</h1>
                 <p className="text-gray-400 mb-6">{data.tournamentName}</p>
                 <div className="space-y-3">
@@ -249,10 +247,10 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
                     ))}
                 </div>
                 <div className="mt-8 flex flex-col sm:flex-row gap-4">
-                    <Button onClick={handleFinishRound} className="w-full">
+                    <Button onClick={handleFinishRound} className="w-full" size="lg">
                         {isEditing ? 'Confirmar Alterações e Sair' : 'Confirmar e Finalizar Rodada'}
                     </Button>
-                    <Button onClick={() => { setIsEditing(true); setView('SCORECARD'); }} variant="secondary" className="w-full">
+                    <Button onClick={() => { setIsEditing(true); setView('SCORECARD'); }} variant="secondary" className="w-full" size="lg">
                         Alterar Marcação
                     </Button>
                 </div>
@@ -265,46 +263,50 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
     return (
         <>
             {modalImageUrl && (
-                <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50" onClick={() => setModalImageUrl(null)}>
-                    <img src={`${import.meta.env.VITE_API_URL}${modalImageUrl}`} alt={`Visão aérea do buraco ${currentHoleInfo?.holeNumber}`} className="max-w-[90%] max-h-[90%] object-contain rounded-lg"/>
+                <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4" onClick={() => setModalImageUrl(null)}>
+                    <img src={`${import.meta.env.VITE_API_URL}${modalImageUrl}`} alt={`Visão aérea do buraco ${currentHoleInfo?.holeNumber}`} className="max-w-[95%] max-h-[95vh] object-contain rounded-lg shadow-2xl"/>
                 </div>
             )}
-            <div className="bg-gray-800 p-4 rounded-lg shadow-xl flex flex-col h-[calc(100vh-10rem)]">
-                <div className="flex justify-between items-center pb-4 border-b border-gray-700">
-                    <Button onClick={onBack} variant="secondary" size="sm"><ChevronLeftIcon className="h-5 w-5 mr-1"/> Início</Button>
-                    <h2 className="text-xl font-bold text-center">{data.tournamentName}</h2>
+            <div className="card flex flex-col h-full md:h-[calc(100vh-12rem)]">
+                <div className="flex flex-col sm:flex-row justify-between items-center pb-4 border-b border-gray-700 gap-4">
+                    <Button onClick={onBack} variant="secondary" size="sm"><ChevronLeftIcon className="h-5 w-5 mr-1"/> Voltar</Button>
+                    <h2 className="text-xl font-bold text-center text-white truncate">{data.tournamentName}</h2>
                     {type === 'tournament' && (
-                        <Button onClick={() => setView('LEADERBOARD')} size="sm">Ver Leaderboard</Button>
+                        <Button onClick={() => setView('LEADERBOARD')} size="sm">Leaderboard</Button>
                     )}
                 </div>
-                <div className="flex items-center justify-between p-4 my-4 bg-gray-900 rounded-lg">
-                    <Button size="icon" onClick={() => changeHole(-1)} disabled={currentStep === 0}><ChevronLeftIcon className="h-6 w-6"/></Button>
+
+                <div className="flex items-center justify-between p-4 my-4 bg-gray-900 rounded-lg shadow-inner">
+                    <Button size="icon" onClick={() => changeHole(-1)} disabled={currentStep === 0}><ChevronLeftIcon className="h-8 w-8"/></Button>
                     <div className="text-center">
-                        <p className="text-gray-400 text-sm">BURACO</p>
-                        <p className="text-4xl font-bold text-white">{currentHoleNumber}</p>
-                        <div className="text-gray-400 flex items-center justify-center gap-x-4 mt-1">
-                            <span className="font-bold">PAR {currentHoleInfo?.par}</span>
+                        <p className="text-gray-400 text-sm tracking-widest">BURACO</p>
+                        <p className="text-6xl font-bold text-white">{currentHoleNumber}</p>
+                        <div className="text-gray-300 flex items-center justify-center gap-x-4 mt-1">
+                            <span className="font-semibold text-lg">PAR {currentHoleInfo?.par}</span>
                             {currentHoleInfo?.aerialImageUrl && (
-                                <button onClick={() => setModalImageUrl(currentHoleInfo.aerialImageUrl!)}><PhotoIcon className="h-5 w-5 text-blue-400 hover:text-blue-300"/></button>
+                                <button onClick={() => setModalImageUrl(currentHoleInfo.aerialImageUrl!)} className="text-blue-400 hover:text-blue-300 transition-colors">
+                                    <PhotoIcon className="h-6 w-6"/>
+                                </button>
                             )}
                         </div>
                     </div>
-                    <Button size="icon" onClick={() => changeHole(1)} disabled={!isEditing && currentStep >= highestAllowedStep}><ChevronRightIcon className="h-6 w-6"/></Button>
+                    <Button size="icon" onClick={() => changeHole(1)} disabled={!isEditing && currentStep >= highestAllowedStep}><ChevronRightIcon className="h-8 w-8"/></Button>
                 </div>
-                <div className="flex-grow overflow-y-auto space-y-3 pr-2">
+
+                <div className="flex-grow overflow-y-auto space-y-4 pr-2">
                     {data.players.map(player => {
                         const score = localScores[player.id]?.[currentHoleNumber];
                         return (
-                            <div key={player.id} className="grid grid-cols-3 items-center p-3 bg-gray-700 rounded-lg">
+                            <div key={player.id} className="grid grid-cols-3 items-center p-4 bg-gray-700/50 rounded-lg">
                                 <div className="col-span-1">
-                                    <p className="font-bold text-white truncate">{player.fullName}</p>
+                                    <p className="font-bold text-white text-lg truncate">{player.fullName}</p>
                                 </div>
-                                <div className="col-span-2 flex items-center justify-end space-x-2">
-                                    <Button size="icon" variant="secondary" onClick={() => handleScoreChange(player.id, currentHoleNumber, -1)} disabled={!score || score === 1 || isHoleLocked}>
+                                <div className="col-span-2 flex items-center justify-end space-x-3">
+                                    <Button size="lg" variant="secondary" onClick={() => handleScoreChange(player.id, currentHoleNumber, -1)} disabled={!score || score === 1 || isHoleLocked}>
                                         <MinusIcon className="h-6 w-6"/>
                                     </Button>
-                                    <span className="text-3xl font-bold w-12 text-center text-green-400">{score ?? '-'}</span>
-                                    <Button size="icon" variant="secondary" onClick={() => handleScoreChange(player.id, currentHoleNumber, 1)} disabled={isHoleLocked}>
+                                    <span className="text-5xl font-bold w-16 text-center text-green-400">{score ?? '-'}</span>
+                                    <Button size="lg" variant="secondary" onClick={() => handleScoreChange(player.id, currentHoleNumber, 1)} disabled={isHoleLocked}>
                                         <PlusIcon className="h-6 w-6"/>
                                     </Button>
                                 </div>
@@ -312,16 +314,17 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
                         );
                     })}
                 </div>
-                <div className="mt-auto pt-4 border-t border-gray-700">
+
+                <div className="mt-auto pt-6 border-t border-gray-700">
                     {isEditing ? (
-                        <Button onClick={() => setView('SUMMARY')} className="w-full">Ver Resumo e Finalizar</Button>
+                        <Button onClick={() => setView('SUMMARY')} className="w-full" size="lg">Ver Resumo e Finalizar</Button>
                     ) : isHoleLocked ? (
                         <div className="text-center text-green-400 font-bold p-3 bg-green-900/50 rounded-lg">
                             Buraco {currentHoleNumber} já foi confirmado.
                         </div>
                     ) : (
-                        <Button onClick={handleConfirmHole} className="w-full" disabled={!isHoleComplete(currentHoleNumber, localScores, data.players)}>
-                           {currentStep === 17 ? "Confirmar Buraco Final e Ver Resumo" : `Confirmar Pontuações do Buraco ${currentHoleNumber}`}
+                        <Button onClick={handleConfirmHole} className="w-full" size="lg" disabled={!isHoleComplete(currentHoleNumber, localScores, data.players)}>
+                           {currentStep === 17 ? "Confirmar Buraco Final e Ver Resumo" : `Confirmar Scores do Buraco ${currentHoleNumber}`}
                         </Button>
                     )}
                 </div>

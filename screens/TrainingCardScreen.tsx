@@ -1,4 +1,6 @@
-// screens/TrainingCardScreen.tsx
+// essercodestudio/birdify-app/birdify-app-5edd58081f645dcc34f897e15210f0f29db5dc87/screens/TrainingCardScreen.tsx
+// VERSÃO COMPLETA E CORRIGIDA
+
 import React, { useState, useEffect, useContext } from 'react';
 import axios from 'axios';
 import { AuthContext } from '../context/AuthContext';
@@ -18,7 +20,7 @@ const TrainingCardScreen: React.FC<{ training: any; onBack: () => void; }> = ({ 
                 const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/trainings/history/${training.trainingGroupId}/player/${user.id}`);
                 setScores(response.data);
             } catch (error) {
-                console.error("Erro ao buscar detalhes do cartão", error);
+                console.error("Erro ao buscar detalhes do cartão de treino", error);
             } finally {
                 setLoading(false);
             }
@@ -26,21 +28,40 @@ const TrainingCardScreen: React.FC<{ training: any; onBack: () => void; }> = ({ 
         fetchDetails();
     }, [user, training]);
 
-    const handleExport = async () => {
+    // COMENTÁRIO (PONTO 3 & 4): Função para exportar o cartão INDIVIDUAL. Esta função já estava correta.
+    const handleExportIndividual = async () => {
         if (!user) return;
         try {
             const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/trainings/${training.trainingGroupId}/export/${user.id}`, { responseType: 'blob' });
             const url = window.URL.createObjectURL(new Blob([response.data]));
             const link = document.createElement('a');
             link.href = url;
-            link.setAttribute('download', `cartao_treino_${user.fullName.replace(/\s+/g, '_')}.xlsx`);
+            link.setAttribute('download', `meu_cartao_treino_${user.fullName.replace(/\s+/g, '_')}.xlsx`);
             document.body.appendChild(link);
             link.click();
             link.remove();
         } catch (error) {
-            alert('Erro ao exportar o resultado.');
+            alert('Erro ao exportar o seu resultado.');
         }
     };
+
+    // COMENTÁRIO (PONTO 5): NOVA função para exportar o cartão do GRUPO.
+    const handleExportGroup = async () => {
+        try {
+            const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/trainings/export/grupo/${training.trainingGroupId}`, { responseType: 'blob' });
+            const url = window.URL.createObjectURL(new Blob([response.data]));
+            const link = document.createElement('a');
+            link.href = url;
+            link.setAttribute('download', `resultado_grupo_treino_${training.trainingGroupId}.xlsx`);
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+        } catch (error) {
+            alert('Erro ao exportar o resultado do grupo.');
+            console.error(error);
+        }
+    };
+
 
     if (loading) return <Spinner />;
 
@@ -49,7 +70,7 @@ const TrainingCardScreen: React.FC<{ training: any; onBack: () => void; }> = ({ 
 
     return (
         <div className="bg-gray-800 p-4 sm:p-6 rounded-lg shadow-xl">
-            <div className="flex justify-between items-center mb-6">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
                 <div className="flex items-center">
                     <Button onClick={onBack} variant="secondary" size="icon" className="mr-4">
                         <ChevronLeftIcon className="h-6 w-6" />
@@ -59,7 +80,11 @@ const TrainingCardScreen: React.FC<{ training: any; onBack: () => void; }> = ({ 
                         <p className="text-gray-400">Finalizado em: {new Date(training.finishedAt).toLocaleString('pt-BR', {timeZone: 'UTC'})}</p>
                     </div>
                 </div>
-                <Button onClick={handleExport}>Exportar Excel</Button>
+                {/* Botões de exportação */}
+                <div className="flex gap-2">
+                    <Button onClick={handleExportGroup} variant="secondary">Exportar Grupo</Button>
+                    <Button onClick={handleExportIndividual}>Exportar Meu Cartão</Button>
+                </div>
             </div>
             
             <div className="overflow-x-auto">
@@ -75,13 +100,13 @@ const TrainingCardScreen: React.FC<{ training: any; onBack: () => void; }> = ({ 
                     <tbody className="bg-gray-800 divide-y divide-gray-600">
                         {scores.map(s => (
                             <tr key={s.holeNumber} className="text-center">
-                                <td className="px-4 py-3 font-bold">{s.holeNumber}</td>
-                                <td className="px-4 py-3">{s.yardage ? `${s.yardage}m` : '-'}</td>
-                                <td className="px-4 py-3">{s.par}</td>
+                                <td className="px-4 py-3 font-bold text-white">{s.holeNumber}</td>
+                                <td className="px-4 py-3 text-gray-300">{s.yardage ? `${s.yardage}m` : '-'}</td>
+                                <td className="px-4 py-3 text-gray-300">{s.par}</td>
                                 <td className="px-4 py-3 font-bold text-green-400">{s.strokes}</td>
                             </tr>
                         ))}
-                        <tr className="bg-gray-700 font-bold">
+                        <tr className="bg-gray-700 font-bold text-white">
                             <td className="px-4 py-3 text-right" colSpan={2}>Totais</td>
                             <td className="px-4 py-3 text-center">{totalPar}</td>
                             <td className="px-4 py-3 text-center">{totalStrokes}</td>

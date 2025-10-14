@@ -1,10 +1,13 @@
+// essercodestudio/birdify-app/birdify-app-5edd58081f645dcc34f897e15210f0f29db5dc87/components/admin/ManageGroups.tsx
+// VERSÃO COM CORREÇÃO VISUAL DEFINITIVA APLICADA
+
 import React, { useState, useEffect, useContext, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import Button from '../Button';
 import Spinner from '../Spinner';
 import { AuthContext } from '../../context/AuthContext';
 
-// Interfaces
+// Interfaces (sem alterações)
 interface Tournament {
   id: number;
   name: string;
@@ -40,12 +43,8 @@ const ManageGroups: React.FC = () => {
     const [confirmedPlayers, setConfirmedPlayers] = useState<Player[]>([]);
     const [groups, setGroups] = useState<Group[]>([]);
     const [availableTees, setAvailableTees] = useState<string[]>([]);
-
-    // Estados de controlo da UI
     const [loading, setLoading] = useState(false);
     const [generatedCode, setGeneratedCode] = useState<string | null>(null);
-
-    // Estados do formulário de criação
     const [selectedPlayers, setSelectedPlayers] = useState<number[]>([]);
     const [responsiblePlayerId, setResponsiblePlayerId] = useState<number | null>(null);
     const [startHole, setStartHole] = useState<number>(1);
@@ -98,7 +97,6 @@ const ManageGroups: React.FC = () => {
             if (responsiblePlayerId === playerId && !newSelection.includes(playerId)) {
                 setResponsiblePlayerId(null);
             }
-            // Remove a seleção de tee se o jogador for desmarcado
             if (!newSelection.includes(playerId)) {
                 setPlayerTeeSelections(current => {
                     const newTees = { ...current };
@@ -132,7 +130,6 @@ const ManageGroups: React.FC = () => {
                 startHole,
                 players: playersData,
                 responsiblePlayerId,
-                category: 'default'
             });
             setGeneratedCode(response.data.accessCode);
             setSelectedPlayers([]);
@@ -158,17 +155,20 @@ const ManageGroups: React.FC = () => {
     const playersInGroups = useMemo(() => new Set(groups.flatMap(g => g.players.map(p => p.playerId))), [groups]);
     const availablePlayers = confirmedPlayers.filter(p => !playersInGroups.has(p.playerId));
     const filteredAvailablePlayers = availablePlayers.filter(p => p.fullName.toLowerCase().includes(searchTerm.toLowerCase()));
+    
+    // Classe de estilo padrão para inputs, garantindo o tema escuro
+    const inputStyle = "w-full px-3 py-2 border border-gray-600 bg-gray-900 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent";
 
     return (
-        <div className="manage-groups-container space-y-8">
-            <div className="header p-6 bg-gray-700/50 rounded-lg">
+        <div className="space-y-8">
+            <div className="p-6 bg-gray-800 rounded-lg shadow-xl">
                 <h1 className="text-xl font-bold text-green-400">Gerenciar Grupos</h1>
-                <p className="text-sm text-gray-300">Crie e gerencie os grupos para os torneios.</p>
+                <p className="text-sm text-gray-300 mt-1">Crie e gerencie os grupos para os torneios.</p>
             </div>
 
-            <div className="section-card p-6 bg-gray-700/50 rounded-lg">
-                <h2 className="font-bold text-lg mb-2">1. Selecionar Torneio</h2>
-                <select value={selectedTournament} onChange={(e) => setSelectedTournament(e.target.value)} disabled={loading} className="input w-full sm:w-1/2">
+            <div className="p-6 bg-gray-800 rounded-lg shadow-xl">
+                <h2 className="font-bold text-lg mb-2 text-white">1. Selecionar Torneio</h2>
+                <select value={selectedTournament} onChange={(e) => setSelectedTournament(e.target.value)} disabled={loading} className={inputStyle + " sm:w-1/2"}>
                     <option value="">-- Selecione um torneio --</option>
                     {tournaments.map(tournament => (
                         <option key={tournament.id} value={tournament.id}>
@@ -181,44 +181,44 @@ const ManageGroups: React.FC = () => {
             {selectedTournament && (loading ? <Spinner /> :
                 <>
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                        <div className="lg:col-span-1 p-6 bg-gray-700/50 rounded-lg flex flex-col">
+                        <div className="lg:col-span-1 p-6 bg-gray-800 rounded-lg shadow-xl flex flex-col">
                             <h3 className="text-lg font-bold text-green-400">2. Jogadores Disponíveis ({availablePlayers.length})</h3>
-                            <input type="text" placeholder="Buscar jogador..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="input w-full my-4" />
+                            <input type="text" placeholder="Buscar jogador..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className={inputStyle + " my-4"} />
                             <div className="space-y-2 flex-grow overflow-y-auto pr-2">
                                 {filteredAvailablePlayers.map(player => (
-                                    <div key={player.registrationId} className={`p-2 rounded flex items-center gap-2 cursor-pointer ${selectedPlayers.includes(player.playerId) ? 'bg-green-800' : 'bg-gray-800 hover:bg-gray-600'}`} onClick={() => togglePlayerSelection(player.playerId)}>
+                                    <div key={player.registrationId} className={`p-2 rounded flex items-center gap-2 cursor-pointer ${selectedPlayers.includes(player.playerId) ? 'bg-green-800' : 'bg-gray-700 hover:bg-gray-600'}`} onClick={() => togglePlayerSelection(player.playerId)}>
                                         <input type="checkbox" checked={selectedPlayers.includes(player.playerId)} readOnly className="h-4 w-4 bg-gray-900 border-gray-600 rounded text-green-600" />
-                                        <span>{player.fullName}</span>
+                                        <span className="text-white">{player.fullName}</span>
                                     </div>
                                 ))}
                             </div>
                         </div>
-                        <div className="lg:col-span-2 p-6 bg-gray-700/50 rounded-lg">
+                        <div className="lg:col-span-2 p-6 bg-gray-800 rounded-lg shadow-xl">
                             <h3 className="text-lg font-bold text-green-400 mb-4">3. Criar Novo Grupo</h3>
                             <div className="space-y-4">
                                 <div>
                                     <label className="block text-sm font-medium text-gray-300 mb-1">Jogadores Selecionados ({selectedPlayers.length})</label>
-                                    <div className="p-2 bg-gray-900/50 rounded-md min-h-[50px] space-y-2">
+                                    <div className="p-2 bg-gray-900 rounded-md min-h-[50px] space-y-2">
                                         {selectedPlayers.map(id => {
                                             const player = confirmedPlayers.find(p => p.playerId === id);
                                             return (
-                                                <div key={id} className="flex flex-col sm:flex-row items-center justify-between bg-gray-800 p-2 rounded gap-2">
-                                                    <span className="flex-grow">{player?.fullName}</span>
+                                                <div key={id} className="flex flex-col sm:flex-row items-center justify-between bg-gray-700 p-2 rounded gap-2">
+                                                    <span className="flex-grow text-white">{player?.fullName}</span>
                                                     <div className="flex items-center gap-4">
-                                                        <select value={playerTeeSelections[id] || ''} onChange={(e) => setPlayerTeeSelections(prev => ({...prev, [id]: e.target.value}))} className="input text-sm py-1">
+                                                        <select value={playerTeeSelections[id] || ''} onChange={(e) => setPlayerTeeSelections(prev => ({...prev, [id]: e.target.value}))} className={inputStyle + " text-sm py-1"}>
                                                             <option value="">-- Tee --</option>
                                                             {availableTees.map(color => <option key={color} value={color}>{color}</option>)}
                                                         </select>
-                                                        <label className="text-xs flex items-center gap-1 cursor-pointer whitespace-nowrap"><input type="radio" name="responsible" checked={responsiblePlayerId === id} onChange={() => setResponsiblePlayerId(id)} /> Marcador</label>
+                                                        <label className="text-xs flex items-center gap-1 cursor-pointer whitespace-nowrap text-gray-300"><input type="radio" name="responsible" checked={responsiblePlayerId === id} onChange={() => setResponsiblePlayerId(id)} /> Marcador</label>
                                                     </div>
                                                 </div>
                                             )
                                         })}
                                     </div>
                                 </div>
-                                <div className="form-group">
-                                    <label className="text-sm">Buraco de Início:</label>
-                                    <select value={startHole} onChange={(e) => setStartHole(Number(e.target.value))} className="input ml-2">
+                                <div>
+                                    <label className="text-sm text-gray-300">Buraco de Início:</label>
+                                    <select value={startHole} onChange={(e) => setStartHole(Number(e.target.value))} className={inputStyle + " ml-2 w-auto"}>
                                         {Array.from({ length: 18 }, (_, i) => i + 1).map(hole => (
                                             <option key={hole} value={hole}>Buraco {hole}</option>
                                         ))}
@@ -229,21 +229,21 @@ const ManageGroups: React.FC = () => {
                         </div>
                     </div>
 
-                    <div className="section-card p-6 bg-gray-700/50 rounded-lg">
-                        <h2 className="font-bold text-lg mb-2">Grupos do Torneio ({groups.length})</h2>
+                    <div className="p-6 bg-gray-800 rounded-lg shadow-xl">
+                        <h2 className="font-bold text-lg mb-2 text-white">Grupos do Torneio ({groups.length})</h2>
                         <div className="groups-list space-y-4">
                             {groups.map(group => (
-                                <div key={group.id} className="group-card bg-gray-800 p-4 rounded-lg">
+                                <div key={group.id} className="bg-gray-700 p-4 rounded-lg">
                                     <div className="group-header flex justify-between items-start">
                                         <div>
-                                            <h3 className="font-bold">Grupo (Início Buraco {group.startHole})</h3>
-                                            <span className="access-code text-sm font-mono bg-gray-900 px-2 py-1 rounded">Código: {group.accessCode}</span>
+                                            <h3 className="font-bold text-white">Grupo (Início Buraco {group.startHole})</h3>
+                                            <span className="text-sm font-mono bg-gray-900 px-2 py-1 rounded text-gray-300">Código: {group.accessCode}</span>
                                         </div>
                                         <Button size="sm" variant="danger" onClick={() => handleDeleteGroup(group.id)}>Apagar</Button>
                                     </div>
                                     <div className="group-players mt-2">
-                                        <h4 className="text-sm font-semibold">Jogadores:</h4>
-                                        <ul>
+                                        <h4 className="text-sm font-semibold text-gray-200">Jogadores:</h4>
+                                        <ul className="list-disc list-inside text-gray-300">
                                             {group.players.map(player => (
                                                 <li key={player.playerId}>
                                                     {player.fullName}

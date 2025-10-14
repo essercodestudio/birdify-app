@@ -1,18 +1,31 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Birdify</title>
 
     <link rel="icon" type="image/png" href="/logoapp.png" />
-    <link rel="icon" type="image/png" sizes="32x32" href="/logoapp.png">
-    <link rel="icon" type="image/png" sizes="16x16" href="/logoapp.png">
-    <link rel="apple-touch-icon" sizes="180x180" href="/logoapp.png">
-    
     <script src="https://cdn.tailwindcss.com"></script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <style>
+      body {
+        font-family: 'Inter', sans-serif;
+        background-color: #111827; /* Tailwind gray-900 */
+      }
+      .card {
+        @apply bg-gray-800 p-4 sm:p-6 rounded-xl shadow-lg border border-gray-700/50;
+      }
+      .input {
+        @apply w-full px-4 py-2.5 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition-colors;
+      }
+    </style>
   </head>
-  <body class="bg-gray-900 text-white antialiased">
+  <body class="text-gray-100 antialiased">
     <div id="root"></div>
     <script type="module" src="/index.tsx"></script>
   </body>

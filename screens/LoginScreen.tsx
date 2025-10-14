@@ -1,6 +1,7 @@
-// screens/LoginScreen.tsx - VERSÃO CORRIGIDA E COMPLETA
+// essercodestudio/birdify-app/birdify-app-5edd58081f645dcc34f897e15210f0f29db5dc87/screens/LoginScreen.tsx
+// VERSÃO COMPLETA E FINAL COM CORREÇÃO VISUAL DIRETA
 
-import React, { useState, useContext, useEffect } from 'react';
+import React, { useState, useContext } from 'react';
 import axios from 'axios';
 import { AuthContext } from '../context/AuthContext';
 import Button from '../components/Button';
@@ -9,36 +10,19 @@ import { User } from '../types';
 const LoginScreen: React.FC = () => {
     const [view, setView] = useState<'LOGIN' | 'REGISTER' | 'FORGOT_PASSWORD'>('LOGIN');
     
-    // Estados do formulário
-    const [modality, setModality] = useState<'Golf' | 'Footgolf'>('Golf');
-    const [club, setClub] = useState('');
+    // Estados dos formulários
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [fullName, setFullName] = useState('');
     const [gender, setGender] = useState('Male'); 
-    const [birthDate, setBirthDate] = useState(''); // <-- NOVO ESTADO ADICIONADO
-
-    const [clubList, setClubList] = useState<string[]>([]);
+    
     const [error, setError] = useState<string | null>(null);
     const [successMessage, setSuccessMessage] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
     const { login } = useContext(AuthContext);
 
-    useEffect(() => {
-        const fetchClubs = async () => {
-            if (view !== 'REGISTER') return;
-            try {
-                const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/clubs`, {
-                    params: { modality }
-                });
-                setClubList(response.data.map((item: { name: string }) => item.name));
-            } catch (error) {
-                console.error("Erro ao buscar a lista de clubes", error);
-                setClubList([]);
-            }
-        };
-        fetchClubs();
-    }, [modality, view]);
+    // COMENTÁRIO: Estilo de input definido como uma constante para garantir consistência e forçar o tema escuro.
+    const inputStyle = "appearance-none block w-full px-4 py-2.5 border border-[#2E4A37] bg-[#0D1B12] text-[#E6F5E6] placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-[#22C55E] focus:border-transparent sm:text-sm rounded-lg transition-colors";
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -46,7 +30,11 @@ const LoginScreen: React.FC = () => {
         setError(null);
         try {
             const response = await axios.post(`${import.meta.env.VITE_API_URL}/api/login`, { email, password });
-            login(response.data.user);
+            if (response.data.success) {
+                login(response.data.user as User);
+            } else {
+                setError(response.data.error || 'Ocorreu um erro.');
+            }
         } catch (err: any) {
             setError(err.response?.data?.error || 'Não foi possível conectar ao servidor.');
         } finally {
@@ -58,16 +46,12 @@ const LoginScreen: React.FC = () => {
         e.preventDefault();
         setIsLoading(true);
         setError(null);
-        
-        // --- ALTERAÇÃO AQUI: Adiciona birthDate ao objeto que será enviado ---
-        const newPlayerData = { fullName, email, password, gender, modality, club, birthDate };
-        
         try {
-            await axios.post(`${import.meta.env.VITE_API_URL}/api/players`, newPlayerData);
+            await axios.post(`${import.meta.env.VITE_API_URL}/api/players`, { fullName, email, password, gender, club: '' });
             const response = await axios.post(`${import.meta.env.VITE_API_URL}/api/login`, { email, password });
-            login(response.data.user);
+            login(response.data.user as User);
         } catch (err: any) {
-            setError(err.response?.data?.error || 'Não foi possível conectar ao servidor.');
+            setError(err.response?.data?.error || 'Não foi possível realizar o registo.');
         } finally {
             setIsLoading(false);
         }
@@ -88,12 +72,18 @@ const LoginScreen: React.FC = () => {
         }
     };
 
+    const getTitle = () => {
+        if (view === 'REGISTER') return 'Crie a sua Conta';
+        if (view === 'FORGOT_PASSWORD') return 'Recuperar Senha';
+        return 'Bem-vindo de Volta';
+    };
+
     const renderForm = () => {
         if (view === 'FORGOT_PASSWORD') {
             return (
-                <form className="mt-8 space-y-4" onSubmit={handleForgotPassword}>
-                    <p className="text-center text-gray-300">Por favor, insira o seu email para receber um link de redefinição de senha.</p>
-                    <input id="email-address" name="email" type="email" autoComplete="email" required className="appearance-none relative block w-full px-3 py-3 border border-gray-700 bg-gray-900 text-white placeholder-gray-500 rounded-md" placeholder="Endereço de e-mail" value={email} onChange={(e) => setEmail(e.target.value)} />
+                <form className="mt-8 space-y-6" onSubmit={handleForgotPassword}>
+                    <p className="text-center text-[#C7D1C9]">Insira o seu email para receber um link de redefinição de senha.</p>
+                    <input name="email" type="email" autoComplete="email" required className={inputStyle} placeholder="Endereço de e-mail" value={email} onChange={(e) => setEmail(e.target.value)} />
                     <div><Button type="submit" className="w-full" isLoading={isLoading}>Enviar Link</Button></div>
                 </form>
             );
@@ -102,79 +92,70 @@ const LoginScreen: React.FC = () => {
         if (view === 'REGISTER') {
             return (
                 <form className="mt-8 space-y-4" onSubmit={handleRegister}>
-                    <input id="full-name" name="fullName" type="text" required className="appearance-none relative block w-full px-3 py-3 border border-gray-700 bg-gray-900 text-white placeholder-gray-500 rounded-md" placeholder="Nome Completo" value={fullName} onChange={(e) => setFullName(e.target.value)} />
-                    <div>
-                        <label className="block text-sm font-medium text-gray-400">Modalidade</label>
-                        <div className="mt-1 flex rounded-md shadow-sm">
-                            <button type="button" onClick={() => setModality('Golf')} className={`flex-1 px-4 py-2 text-sm rounded-l-md transition-colors ${modality === 'Golf' ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>Golf</button>
-                            <button type="button" onClick={() => setModality('Footgolf')} className={`flex-1 px-4 py-2 text-sm rounded-r-md transition-colors ${modality === 'Footgolf' ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>Footgolf</button>
-                        </div>
+                    <input name="fullName" type="text" required className={inputStyle} placeholder="Nome Completo" value={fullName} onChange={(e) => setFullName(e.target.value)} />
+                    <select value={gender} onChange={e => setGender(e.target.value)} className={inputStyle}>
+                        <option value="Male">Masculino</option>
+                        <option value="Female">Feminino</option>
+                    </select>
+                    <input name="email" type="email" autoComplete="email" required className={inputStyle} placeholder="Endereço de e-mail" value={email} onChange={(e) => setEmail(e.target.value)} />
+                    <input name="password" type="password" autoComplete="new-password" required className={inputStyle} placeholder="Senha" value={password} onChange={(e) => setPassword(e.target.value)} />
+                    <div className="flex items-start text-sm pt-2">
+                        <input id="terms" name="terms" type="checkbox" required className="h-4 w-4 mt-1 rounded border-slate-600 bg-slate-700 text-emerald-500 focus:ring-emerald-500" />
+                        <label htmlFor="terms" className="ml-2 text-slate-400">Eu li e concordo com os <a href="/terms-of-use" target="_blank" rel="noopener noreferrer" className="text-emerald-400 hover:underline">Termos de Uso</a> e a <a href="/privacy-policy" target="_blank" rel="noopener noreferrer" className="text-emerald-400 hover:underline">Política de Privacidade</a>.</label>
                     </div>
-                    
-                    {/* --- CAMPO DE DATA DE NASCIMENTO CONDICIONAL --- */}
-                    {modality === 'Footgolf' && (
-                        <div>
-                            <label htmlFor="birthDate" className="block text-sm font-medium text-gray-400">Data de Nascimento</label>
-                            <input 
-                                id="birthDate" 
-                                name="birthDate" 
-                                type="date" 
-                                required={modality === 'Footgolf'} // Só é obrigatório para Footgolf
-                                className="mt-1 block w-full px-3 py-3 border border-gray-700 bg-gray-900 text-white rounded-md"
-                                value={birthDate} 
-                                onChange={(e) => setBirthDate(e.target.value)} 
-                            />
-                        </div>
-                    )}
-                    
-                    <div>
-                        <label htmlFor="club" className="block text-sm font-medium text-gray-400">Clube (Opcional)</label>
-                        <select id="club" value={club} onChange={e => setClub(e.target.value)} className="mt-1 block w-full px-3 py-3 border border-gray-700 bg-gray-900 text-white rounded-md">
-                            <option value="">-- Selecione o seu clube --</option>
-                            {clubList.map(clubName => (<option key={clubName} value={clubName}>{clubName}</option>))}
-                            <option value="Outro">Outro (Não listado)</option>
-                        </select>
-                    </div>
-                    <input id="email-address" name="email" type="email" autoComplete="email" required className="appearance-none relative block w-full px-3 py-3 border border-gray-700 bg-gray-900 text-white placeholder-gray-500 rounded-md" placeholder="Endereço de e-mail" value={email} onChange={(e) => setEmail(e.target.value)} />
-                    <input id="password" name="password" type="password" autoComplete="new-password" required className="appearance-none relative block w-full px-3 py-3 border border-gray-700 bg-gray-900 text-white placeholder-gray-500 rounded-md" placeholder="Senha" value={password} onChange={(e) => setPassword(e.target.value)} />
-                    <div className="flex items-start text-sm">
-                        <input id="terms" name="terms" type="checkbox" required className="h-4 w-4 mt-1 rounded border-gray-600 bg-gray-700 text-green-600 focus:ring-green-500" />
-                        <label htmlFor="terms" className="ml-2 text-gray-400">Eu li e concordo com os <a href="/terms-of-use" target="_blank" rel="noopener noreferrer" className="text-green-400 hover:underline">Termos de Uso</a> e a <a href="/privacy-policy" target="_blank" rel="noopener noreferrer" className="text-green-400 hover:underline">Política de Privacidade</a>.</label>
-                    </div>
-                    <div><Button type="submit" className="w-full" isLoading={isLoading}>Cadastrar</Button></div>
+                    <div className="pt-2"><Button type="submit" className="w-full" isLoading={isLoading}>Criar Conta</Button></div>
                 </form>
             );
         }
 
         return ( // LOGIN View
-            <form className="mt-8 space-y-4" onSubmit={handleLogin}>
-                <input id="email-address" name="email" type="email" autoComplete="email" required className="appearance-none relative block w-full px-3 py-3 border border-gray-700 bg-gray-900 text-white placeholder-gray-500 rounded-md" placeholder="Endereço de e-mail" value={email} onChange={(e) => setEmail(e.target.value)} />
-                <input id="password" name="password" type="password" autoComplete="current-password" required className="appearance-none relative block w-full px-3 py-3 border border-gray-700 bg-gray-900 text-white placeholder-gray-500 rounded-md" placeholder="Senha" value={password} onChange={(e) => setPassword(e.target.value)} />
-                <div className="text-right text-sm"><button type="button" onClick={() => setView('FORGOT_PASSWORD')} className="font-medium text-green-400 hover:text-green-300">Esqueceu a senha?</button></div>
+            <form className="mt-8 space-y-6" onSubmit={handleLogin}>
+                <input name="email" type="email" autoComplete="email" required className={inputStyle} placeholder="Endereço de e-mail" value={email} onChange={(e) => setEmail(e.target.value)} />
+                <input name="password" type="password" autoComplete="current-password" required className={inputStyle} placeholder="Senha" value={password} onChange={(e) => setPassword(e.target.value)} />
+                <div className="text-right text-sm">
+                    <button type="button" onClick={() => { setView('FORGOT_PASSWORD'); setError(null); }} className="font-semibold text-[#22C55E] hover:text-[#15803D] transition-colors">
+                        Esqueceu a senha?
+                    </button>
+                </div>
                 <div><Button type="submit" className="w-full" isLoading={isLoading}>Entrar</Button></div>
             </form>
         );
     };
 
-    const getTitle = () => {
-        if (view === 'REGISTER') return 'Crie a sua Conta';
-        if (view === 'FORGOT_PASSWORD') return 'Redefinir Senha';
-        return 'Acesse o Birdify';
-    };
-
     return (
-        <div className="flex flex-col items-center justify-center min-h-[70vh]">
-            <div className="w-full max-w-md p-8 space-y-6 bg-gray-800 rounded-xl shadow-lg">
+        <div className="flex flex-col items-center justify-center min-h-[80vh] px-4">
+            <div className="w-full max-w-md p-8 space-y-6 card">
                 <div className="text-center">
-                    <img src="/logoapp.png" alt="Birdify Logo" className="mx-auto h-20 w-auto mb-6" />
-                    <h2 className="mt-6 text-3xl font-extrabold text-white">{getTitle()}</h2>
+                    <img src="/logoapp.png" alt="Birdify Logo" className="mx-auto h-20 w-auto mb-4" />
+                    <h2 className="mt-4 text-3xl font-extrabold text-white">{getTitle()}</h2>
+                    <p className="mt-2 text-[#C7D1C9]">
+                        {view === 'LOGIN' && 'Insira as suas credenciais para aceder.'}
+                        {view === 'REGISTER' && 'Preencha os seus dados para começar.'}
+                        {view === 'FORGOT_PASSWORD' && 'Insira o seu email para recuperar o acesso.'}
+                    </p>
                 </div>
-                {error && <p className="text-sm text-red-400 text-center">{error}</p>}
-                {successMessage && <p className="text-sm text-green-400 text-center">{successMessage}</p>}
+
+                {error && <p className="text-sm text-red-400 text-center bg-red-900/50 p-3 rounded-lg">{error}</p>}
+                {successMessage && <p className="text-sm text-green-400 text-center bg-green-900/50 p-3 rounded-lg">{successMessage}</p>}
+                
                 {renderForm()}
-                <div className="text-center text-sm">
-                    {view !== 'LOGIN' && (<button onClick={() => { setView('LOGIN'); setError(null); }} className="font-medium text-green-400 hover:text-green-300 mr-4">Fazer Login</button>)}
-                    {view !== 'REGISTER' && (<button onClick={() => { setView('REGISTER'); setError(null); }} className="font-medium text-green-400 hover:text-green-300">Não tem uma conta? Cadastre-se</button>)}
+                
+                <div className="text-center text-sm pt-4 border-t border-[#2E4A37]">
+                    {view === 'LOGIN' ? (
+                        <p className="text-[#C7D1C9]">
+                            Não tem uma conta?{' '}
+                            <button onClick={() => { setView('REGISTER'); setError(null); }} className="font-semibold text-[#22C55E] hover:text-[#15803D] transition-colors">
+                                Cadastre-se
+                            </button>
+                        </p>
+                    ) : (
+                        <p className="text-[#C7D1C9]">
+                            Já tem uma conta?{' '}
+                            <button onClick={() => { setView('LOGIN'); setError(null); }} className="font-semibold text-[#22C55E] hover:text-[#15803D] transition-colors">
+                                Fazer Login
+                            </button>
+                        </p>
+                    )}
                 </div>
             </div>
         </div>

@@ -1,4 +1,6 @@
-// screens/TrainingHistoryScreen.tsx
+// essercodestudio/birdify-app/birdify-app-5edd58081f645dcc34f897e15210f0f29db5dc87/screens/TrainingHistoryScreen.tsx
+// VERSÃO COMPLETA E CORRIGIDA
+
 import React, { useState, useEffect, useContext } from 'react';
 import axios from 'axios';
 import { AuthContext } from '../context/AuthContext';
@@ -18,10 +20,11 @@ const TrainingHistoryScreen: React.FC<{ onBack: () => void; }> = ({ onBack }) =>
         const fetchHistory = async () => {
             setLoading(true);
             try {
+                // COMENTÁRIO (PONTO 4): Faz a chamada para a rota de histórico que busca treinos com status = 'completed'
                 const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/trainings/history/player/${user.id}`);
                 setHistory(response.data);
             } catch (error) {
-                console.error("Erro ao buscar histórico", error);
+                console.error("Erro ao buscar histórico de treinos:", error);
             } finally {
                 setLoading(false);
             }
@@ -66,7 +69,9 @@ const TrainingHistoryScreen: React.FC<{ onBack: () => void; }> = ({ onBack }) =>
                         </Button>
                     </div>
                 )) : (
-                    <p className="text-center text-gray-400 py-10">Você não tem treinos finalizados.</p>
+                    <div className="text-center py-10 bg-gray-700/50 rounded-lg">
+                        <p className="text-gray-400">Você não tem treinos finalizados no histórico.</p>
+                    </div>
                 )}
             </div>
         </div>
