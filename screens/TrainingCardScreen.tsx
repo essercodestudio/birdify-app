@@ -28,15 +28,15 @@ const TrainingCardScreen: React.FC<{ training: any; onBack: () => void; }> = ({ 
         fetchDetails();
     }, [user, training]);
 
-    // COMENTÁRIO (PONTO 3 & 4): Função para exportar o cartão INDIVIDUAL. Esta função já estava correta.
     const handleExportIndividual = async () => {
         if (!user) return;
         try {
-            const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/trainings/${training.trainingGroupId}/export/${user.id}`, { responseType: 'blob' });
+            // ROTA ATUALIZADA para a nova exportação individual
+            const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/export/scorecard/training/${training.trainingGroupId}?playerId=${user.id}`, { responseType: 'blob' });
             const url = window.URL.createObjectURL(new Blob([response.data]));
             const link = document.createElement('a');
             link.href = url;
-            link.setAttribute('download', `meu_cartao_treino_${user.fullName.replace(/\s+/g, '_')}.xlsx`);
+            link.setAttribute('download', `meu_scorecard_${user.fullName.replace(/\s+/g, '_')}.xlsx`);
             document.body.appendChild(link);
             link.click();
             link.remove();
@@ -45,14 +45,14 @@ const TrainingCardScreen: React.FC<{ training: any; onBack: () => void; }> = ({ 
         }
     };
 
-    // COMENTÁRIO (PONTO 5): NOVA função para exportar o cartão do GRUPO.
     const handleExportGroup = async () => {
         try {
-            const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/trainings/export/grupo/${training.trainingGroupId}`, { responseType: 'blob' });
+            // ROTA ATUALIZADA para a nova exportação de grupo
+            const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/export/scorecard/training/${training.trainingGroupId}`, { responseType: 'blob' });
             const url = window.URL.createObjectURL(new Blob([response.data]));
             const link = document.createElement('a');
             link.href = url;
-            link.setAttribute('download', `resultado_grupo_treino_${training.trainingGroupId}.xlsx`);
+            link.setAttribute('download', `scorecard_treino_grupo_${training.trainingGroupId}.xlsx`);
             document.body.appendChild(link);
             link.click();
             link.remove();
@@ -61,7 +61,6 @@ const TrainingCardScreen: React.FC<{ training: any; onBack: () => void; }> = ({ 
             console.error(error);
         }
     };
-
 
     if (loading) return <Spinner />;
 
@@ -80,9 +79,8 @@ const TrainingCardScreen: React.FC<{ training: any; onBack: () => void; }> = ({ 
                         <p className="text-gray-400">Finalizado em: {new Date(training.finishedAt).toLocaleString('pt-BR', {timeZone: 'UTC'})}</p>
                     </div>
                 </div>
-                {/* Botões de exportação */}
                 <div className="flex gap-2">
-                    <Button onClick={handleExportGroup} variant="secondary">Exportar Grupo</Button>
+                    <Button onClick={handleExportGroup} variant="secondary">Exportar Scorecard do Grupo</Button>
                     <Button onClick={handleExportIndividual}>Exportar Meu Cartão</Button>
                 </div>
             </div>

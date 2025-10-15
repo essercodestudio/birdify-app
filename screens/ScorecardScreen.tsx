@@ -1,5 +1,4 @@
-// essercodestudio/birdify-app/birdify-app-5edd58081f645dcc34f897e15210f0f29db5dc87/screens/ScorecardScreen.tsx
-// VERSÃO COMPLETA COM A NOVA INTERFACE
+// screens/ScorecardScreen.tsx - VERSÃO ATUALIZADA
 
 import React, { useState, useEffect, useCallback, useMemo, useContext } from 'react';
 import axios from 'axios';
@@ -91,10 +90,16 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
             setHoleSequence(sequence);
 
             const scoresMap: Record<string, Record<number, number | null>> = {};
-            groupData.players.forEach(p => { scoresMap[p.id] = {}; });
-            groupData.scores.forEach(s => { if (scoresMap[s.playerId]) { scoresMap[s.playerId][s.holeNumber] = s.strokes; } });
-            setLocalScores(scoresMap);
             
+            // 1. Inicializa o mapa apenas com os scores que já vêm da API
+            groupData.players.forEach(p => { scoresMap[p.id] = {}; });
+            groupData.scores.forEach(s => { 
+                if (scoresMap[s.playerId]) { 
+                    scoresMap[s.playerId][s.holeNumber] = s.strokes; 
+                } 
+            });
+
+            // 2. Calcula o progresso REAL baseado nos scores salvos
             let lastCompletedStep = -1;
             for (let i = 0; i < sequence.length; i++) {
                 if (isHoleComplete(sequence[i], scoresMap, groupData.players)) {
@@ -106,6 +111,17 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
             const currentPlayableStep = Math.min(lastCompletedStep + 1, 17);
             setCurrentStep(currentPlayableStep);
             setHighestAllowedStep(currentPlayableStep);
+
+            // 3. AGORA, pré-preenche os buracos ainda não jogados com o par
+            groupData.players.forEach(p => {
+                groupData.holes.forEach(hole => {
+                    // Só preenche se não houver um score já definido
+                    if (scoresMap[p.id][hole.holeNumber] === undefined) {
+                        scoresMap[p.id][hole.holeNumber] = hole.par;
+                    }
+                });
+            });
+            setLocalScores(scoresMap);
 
             if (groupData.status === 'completed') {
                 setView('SUMMARY');
@@ -119,7 +135,7 @@ const ScorecardScreen: React.FC<ScorecardScreenProps> = ({ accessCode: initialAc
             setLoading(false);
           }
     }, [accessCode, user, type]);
-
+    
     useEffect(() => {
         fetchScorecardData();
     }, [fetchScorecardData]);

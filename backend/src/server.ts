@@ -19,7 +19,7 @@ const port = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
-// Configuração para servir ficheiros estáticos (imagens dos buracos)
+// Configuração para servir ficheiros estáticos
 const uploadsDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
@@ -32,7 +32,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage: storage });
 
-// Configuração do Pool de Conexões com o Banco de Dados
+// Configuração do Banco de Dados
 const dbConfig = {
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
@@ -43,6 +43,19 @@ const dbConfig = {
     queueLimit: 0
 };
 const pool = mysql.createPool(dbConfig);
+
+
+// --- TIPOS AUXILIARES ---
+interface ScorecardPlayer {
+    id: number;
+    fullName: string;
+    courseHandicap?: number;
+    categoryName?: string;
+    totalStrokes?: number;
+    netScore?: number;
+    tieBreakReason?: string;
+    scores: { holeNumber: number; strokes: number | null }[];
+}
 
 app.post("/api/trainings", async (req: Request, res: Response) => {
     const { courseId, creatorId, date, startHole } = req.body;
@@ -88,14 +101,37 @@ app.post("/api/trainings", async (req: Request, res: Response) => {
     }
 });
 
-app.delete("/api/trainings/:trainingId", async (req: Request, res: Response) => {
-    const { trainingId } = req.params;
+app.delete("/api/trainings/:trainingId/creator/:creatorId", async (req: Request, res: Response) => {
+    const { trainingId, creatorId } = req.params;
     let connection;
     try {
         connection = await pool.getConnection();
+
+        const [trainingRows]: any[] = await connection.execute(
+            "SELECT creatorId FROM trainings WHERE id = ?",
+            [trainingId]
+        );
+
+        if (trainingRows.length === 0 || trainingRows[0].creatorId.toString() !== creatorId) {
+            return res.status(403).json({ error: "Apenas o criador pode apagar o treino." });
+        }
+
+        await connection.beginTransaction();
+
+        const [groups]: any[] = await connection.execute("SELECT id FROM training_groups WHERE trainingId = ?", [trainingId]);
+        if (groups.length > 0) {
+            const groupIds = groups.map((g: any) => g.id);
+            await connection.query("DELETE FROM training_scores WHERE trainingGroupId IN (?)", [groupIds]);
+            await connection.query("DELETE FROM training_participants WHERE trainingGroupId IN (?)", [groupIds]);
+            await connection.query("DELETE FROM training_groups WHERE trainingId = ?", [trainingId]);
+        }
+        
         await connection.execute("DELETE FROM trainings WHERE id = ?", [trainingId]);
+
+        await connection.commit();
         res.status(200).json({ message: "Treino apagado com sucesso." });
     } catch (error) {
+        if (connection) await connection.rollback();
         console.error("Erro ao apagar treino:", error);
         res.status(500).json({ error: "Erro interno ao apagar o treino." });
     } finally {
@@ -147,6 +183,7 @@ app.get("/api/trainings/history/player/:playerId", async (req: Request, res: Res
     }
 });
 
+
 app.get("/api/trainings/groups/:groupId/participants", async (req: Request, res: Response) => {
     const { groupId } = req.params;
     let connection;
@@ -169,7 +206,6 @@ app.get("/api/trainings/groups/:groupId/participants", async (req: Request, res:
     }
 });
 
-// CORREÇÃO: Adicionada verificação para scores ser um array antes de usar forEach
 app.get("/api/trainings/:trainingGroupId/export/:playerId", async (req: Request, res: Response) => {
     let connection;
     try {
@@ -234,6 +270,97 @@ app.get("/api/trainings/:trainingGroupId/export/:playerId", async (req: Request,
         if (connection) connection.release();
     }
 });
+app.get("/api/trainings/export/grupo/:groupId", async (req: Request, res: Response) => {
+    const { groupId } = req.params;
+    let connection;
+    try {
+        connection = await pool.getConnection();
+
+        // 1. Obter informações básicas do treino
+        const [trainingInfo]: any[] = await connection.execute(
+            `SELECT t.date, c.name as courseName, c.id as courseId 
+             FROM trainings t
+             JOIN training_groups tg ON t.id = tg.trainingId
+             JOIN courses c ON t.courseId = c.id
+             WHERE tg.id = ?`,
+            [groupId]
+        );
+
+        if (trainingInfo.length === 0) {
+            return res.status(404).send('Grupo de treino não encontrado.');
+        }
+
+        // 2. Obter todos os participantes do grupo
+        const [players]: any[] = await connection.execute(
+            `SELECT p.id, p.fullName 
+             FROM players p 
+             JOIN training_participants tp ON p.id = tp.playerId 
+             WHERE tp.trainingGroupId = ? AND tp.invitationStatus = 'accepted'`,
+            [groupId]
+        );
+
+        const workbook = new ExcelJS.Workbook();
+        const sheet = workbook.addWorksheet('Resultados do Grupo');
+
+        sheet.mergeCells('A1:D1');
+        sheet.getCell('A1').value = `Resultado do Grupo - ${trainingInfo[0].courseName}`;
+        sheet.getCell('A1').font = { size: 16, bold: true };
+        sheet.addRow(['Data', new Date(trainingInfo[0].date).toLocaleDateString('pt-BR', {timeZone: 'UTC'})]);
+        sheet.addRow([]);
+
+        // 3. Montar o cabeçalho com os nomes dos jogadores
+        const headers = ['Buraco', 'Par'];
+        players.forEach(p => headers.push(p.fullName));
+        sheet.addRow(headers).font = { bold: true };
+        
+        // 4. Buscar os buracos e, para cada um, buscar o score de cada jogador
+        const [holes]: any[] = await connection.execute('SELECT holeNumber, par FROM holes WHERE courseId = ? ORDER BY holeNumber', [trainingInfo[0].courseId]);
+        
+        const totals: Record<string, number> = {};
+        players.forEach(p => totals[p.id] = 0);
+
+        for (const hole of holes) {
+            const rowData: (string | number)[] = [hole.holeNumber, hole.par];
+            for (const player of players) {
+                const [scoreResult]: any[] = await connection.execute(
+                    `SELECT strokes FROM training_scores WHERE trainingGroupId = ? AND playerId = ? AND holeNumber = ?`,
+                    [groupId, player.id, hole.holeNumber]
+                );
+                const strokes = scoreResult[0]?.strokes || 0;
+                rowData.push(strokes);
+                totals[player.id] += strokes;
+            }
+            sheet.addRow(rowData);
+        }
+
+        // 5. Adicionar a linha de totais
+        const totalRow: (string | number)[] = ['Total', ''];
+        players.forEach(p => totalRow.push(totals[p.id]));
+        sheet.addRow(totalRow).font = { bold: true };
+
+        sheet.columns.forEach(column => {
+            let maxLength = 0;
+            column.eachCell!({ includeEmpty: true }, (cell) => {
+                const len = cell.value ? cell.value.toString().length : 10;
+                if (len > maxLength) {
+                    maxLength = len;
+                }
+            });
+            column.width = maxLength < 12 ? 12 : maxLength + 2;
+        });
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename=resultado_grupo_${groupId}.xlsx`);
+        await workbook.xlsx.write(res);
+        res.end();
+
+    } catch (error) {
+        console.error("Erro ao exportar resultado do grupo de treino:", error);
+        res.status(500).json({ error: "Erro ao exportar." });
+    } finally {
+        if (connection) connection.release();
+    }
+});
 
 app.get("/api/courses/public", async (req: Request, res: Response) => {
   let connection;
@@ -267,7 +394,345 @@ app.get("/api/tournaments/:tournamentId/confirmed-players", async (req: Request,
         if (connection) connection.release();
     }
 });
+app.get("/api/tournaments/:tournamentId/leaderboard", async (req: Request, res: Response) => {
+    const { tournamentId } = req.params;
+    let connection;
+    try {
+        connection = await pool.getConnection();
 
+        const [tournamentInfo]: any[] = await connection.execute("SELECT name FROM tournaments WHERE id = ?", [tournamentId]);
+        if (tournamentInfo.length === 0) {
+            return res.status(404).json({ error: "Torneio não encontrado." });
+        }
+
+        const [playerData]: any[] = await connection.execute(
+            `SELECT
+                p.id as playerId,
+                p.fullName,
+                gp.courseHandicap,
+                tcat.name as categoryName,
+                s.holeNumber,
+                s.strokes
+             FROM players p
+             JOIN group_players gp ON p.id = gp.playerId
+             JOIN \`groups\` g ON gp.groupId = g.id
+             LEFT JOIN scores s ON s.groupId = g.id AND s.playerId = p.id
+             LEFT JOIN tournament_registrations tr ON tr.playerId = p.id AND tr.tournamentId = g.tournamentId
+             LEFT JOIN tournament_categories tcat ON tr.categoryId = tcat.id
+             WHERE g.tournamentId = ?
+             ORDER BY p.id, s.holeNumber`,
+            [tournamentId]
+        );
+
+        const leaderboardMap = new Map<number, any>();
+
+        for (const row of playerData) {
+            if (!leaderboardMap.has(row.playerId)) {
+                leaderboardMap.set(row.playerId, {
+                    playerId: row.playerId,
+                    fullName: row.fullName,
+                    courseHandicap: row.courseHandicap,
+                    categoryName: row.categoryName || 'N/A',
+                    scores: []
+                });
+            }
+            if (row.holeNumber) {
+                leaderboardMap.get(row.playerId).scores.push({
+                    holeNumber: row.holeNumber,
+                    strokes: row.strokes
+                });
+            }
+        }
+
+        const leaderboardData = Array.from(leaderboardMap.values());
+
+        leaderboardData.forEach(player => {
+            player.totalStrokes = player.scores.reduce((sum: number, s: any) => sum + (s.strokes || 0), 0);
+            player.netScore = player.totalStrokes - (player.courseHandicap || 0);
+            
+            const calculateTieBreak = (startHole: number, count: number) => {
+                return player.scores
+                    .filter((s: any) => s.holeNumber >= startHole && s.holeNumber < startHole + count)
+                    .reduce((sum: number, s: any) => sum + (s.strokes || 0), 0);
+            };
+
+            player.tieBreakScores = {
+                last9: calculateTieBreak(10, 9),
+                last6: calculateTieBreak(13, 6),
+                last3: calculateTieBreak(16, 3),
+                last1: player.scores.find((s: any) => s.holeNumber === 18)?.strokes || 0,
+            };
+        });
+        
+        leaderboardData.sort((a, b) => {
+            if (a.netScore !== b.netScore) return a.netScore - b.netScore;
+            if (a.tieBreakScores.last9 !== b.tieBreakScores.last9) return a.tieBreakScores.last9 - b.tieBreakScores.last9;
+            if (a.tieBreakScores.last6 !== b.tieBreakScores.last6) return a.tieBreakScores.last6 - b.tieBreakScores.last6;
+            if (a.tieBreakScores.last3 !== b.tieBreakScores.last3) return a.tieBreakScores.last3 - b.tieBreakScores.last3;
+            if (a.tieBreakScores.last1 !== b.tieBreakScores.last1) return a.tieBreakScores.last1 - b.tieBreakScores.last1;
+            return 0;
+        });
+
+        res.json({
+            tournamentName: tournamentInfo[0].name,
+            leaderboard: leaderboardData
+        });
+
+    } catch (error) {
+        console.error("Erro ao gerar leaderboard:", error);
+        res.status(500).json({ error: "Erro interno ao gerar o leaderboard." });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+const styler = {
+    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F2937' } } as ExcelJS.Fill,
+    font: { color: { argb: 'FF34D399' }, bold: true },
+    border: { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } }
+};
+
+// NOVA FUNÇÃO PARA CRIAR ABAS DE LEADERBOARD DETALHADAS
+const buildLeaderboardSheet = (sheet: ExcelJS.Worksheet, title: string, players: ScorecardPlayer[]) => {
+    sheet.addRow([title]).font = { size: 16, bold: true };
+    sheet.mergeCells('A1:Z1');
+    sheet.getRow(1).alignment = { horizontal: 'center' };
+    sheet.addRow([]);
+
+    const headers = ['Pos.', 'Nome', 'HDC', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B9', '1ª Volta', 'B10', 'B11', 'B12', 'B13', 'B14', 'B15', 'B16', 'B17', 'B18', '2ª Volta', 'GROSS', 'NET', 'Desempate Aplicado'];
+    const headerRow = sheet.addRow(headers);
+    headerRow.eachCell(cell => {
+        cell.font = styler.font;
+        cell.fill = styler.fill;
+        cell.border = styler.border;
+    });
+
+    players.forEach((player, index) => {
+        const scores = Array(18).fill(null);
+        player.scores.forEach(s => {
+            if (s.holeNumber >= 1 && s.holeNumber <= 18) {
+                scores[s.holeNumber - 1] = s.strokes;
+            }
+        });
+
+        const row = sheet.addRow([
+            index + 1,
+            player.fullName,
+            player.courseHandicap,
+            ...scores,
+            null, // 1ª Volta
+            null, // 2ª Volta
+            player.totalStrokes,
+            player.netScore,
+            player.tieBreakReason
+        ]);
+        
+        // Fórmulas para 1ª e 2ª volta
+        row.getCell(14).value = { formula: `SUM(D${row.number}:L${row.number})` };
+        row.getCell(24).value = { formula: `SUM(O${row.number}:W${row.number})` };
+    });
+    
+    sheet.getColumn('B').width = 30;
+};
+
+// NOVA FUNÇÃO PARA CRIAR ABA DE CAMPEÕES GROSS
+const buildGrossChampionsSheet = (sheet: ExcelJS.Worksheet, players: ScorecardPlayer[]) => {
+    sheet.addRow(['Campeões Gross']).font = { size: 16, bold: true };
+    sheet.mergeCells('A1:C1');
+    sheet.getRow(1).alignment = { horizontal: 'center' };
+    sheet.addRow([]);
+    
+    const headers = ['Pos.', 'Nome', 'GROSS'];
+    const headerRow = sheet.addRow(headers);
+    headerRow.eachCell(cell => {
+        cell.font = styler.font;
+        cell.fill = styler.fill;
+        cell.border = styler.border;
+    });
+
+    // Ordena por GROSS
+    const sortedPlayers = [...players].sort((a, b) => (a.totalStrokes || 0) - (b.totalStrokes || 0));
+
+    sortedPlayers.forEach((player, index) => {
+        sheet.addRow([index + 1, player.fullName, player.totalStrokes]);
+    });
+    
+    sheet.getColumn('B').width = 30;
+};
+app.get("/api/tournaments/:tournamentId/full-results", async (req: Request, res: Response) => {
+    const { tournamentId } = req.params;
+    let connection;
+    try {
+        connection = await pool.getConnection();
+
+        const [tournamentInfo]: any[] = await connection.execute(
+            `SELECT t.id, t.name, t.date, c.name as courseName, c.id as courseId
+             FROM tournaments t
+             JOIN courses c ON t.courseId = c.id
+             WHERE t.id = ?`,
+            [tournamentId]
+        );
+
+        if (tournamentInfo.length === 0) {
+            return res.status(404).json({ error: "Torneio não encontrado." });
+        }
+
+        const [holes]: any[] = await connection.execute(
+            `SELECT id, holeNumber, par FROM holes WHERE courseId = ? ORDER BY holeNumber ASC`,
+            [tournamentInfo[0].courseId]
+        );
+
+        const [tees]: any[] = await connection.execute(
+            `SELECT t.holeId, t.color, t.yardage
+             FROM tees t
+             JOIN holes h ON t.holeId = h.id
+             WHERE h.courseId = ?`,
+            [tournamentInfo[0].courseId]
+        );
+
+        const course = {
+            ...tournamentInfo[0],
+            holes: holes.map(h => ({
+                ...h,
+                tees: tees.filter(t => t.holeId === h.id)
+            }))
+        };
+        
+        const [playerData]: any[] = await connection.execute(
+            `SELECT
+                p.id as playerId, p.fullName, gp.courseHandicap, tcat.name as categoryName,
+                s.holeNumber, s.strokes
+             FROM players p
+             JOIN group_players gp ON p.id = gp.playerId
+             JOIN \`groups\` g ON gp.groupId = g.id
+             LEFT JOIN scores s ON s.groupId = g.id AND s.playerId = p.id
+             LEFT JOIN tournament_registrations tr ON tr.playerId = p.id AND tr.tournamentId = g.tournamentId
+             LEFT JOIN tournament_categories tcat ON tr.categoryId = tcat.id
+             WHERE g.tournamentId = ?
+             ORDER BY p.id, s.holeNumber`,
+            [tournamentId]
+        );
+
+        const leaderboardMap = new Map<number, any>();
+        for (const row of playerData) {
+            if (!leaderboardMap.has(row.playerId)) {
+                leaderboardMap.set(row.playerId, {
+                    playerId: row.playerId,
+                    fullName: row.fullName,
+                    courseHandicap: row.courseHandicap,
+                    categoryName: row.categoryName || 'Geral',
+                    scores: []
+                });
+            }
+            if (row.holeNumber) {
+                leaderboardMap.get(row.playerId).scores.push({ holeNumber: row.holeNumber, strokes: row.strokes });
+            }
+        }
+
+        const fullLeaderboard = Array.from(leaderboardMap.values());
+        fullLeaderboard.forEach(player => {
+            player.totalStrokes = player.scores.reduce((sum: number, s: any) => sum + (s.strokes || 0), 0);
+            player.netScore = player.totalStrokes - (player.courseHandicap || 0);
+        });
+
+        res.json({ course, players: fullLeaderboard });
+
+    } catch (error) {
+        console.error("Erro ao buscar resultados completos do torneio:", error);
+        res.status(500).json({ error: "Erro interno do servidor." });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+app.get("/api/export/scorecard/tournament/:tournamentId", async (req: Request, res: Response) => {
+    const { tournamentId } = req.params;
+    let connection;
+
+    try {
+        connection = await pool.getConnection();
+        const [tournamentInfo]: any[] = await connection.execute("SELECT name, date FROM tournaments WHERE id = ?", [tournamentId]);
+        if (!tournamentInfo.length) return res.status(404).send('Torneio não encontrado.');
+
+        // Usa a mesma lógica da rota do leaderboard para buscar e processar os dados
+        const [playerData]: any[] = await connection.execute(
+            `SELECT p.id as playerId, p.fullName, gp.courseHandicap, tcat.name as categoryName
+             FROM players p
+             JOIN group_players gp ON p.id = gp.playerId
+             JOIN \`groups\` g ON gp.groupId = g.id
+             LEFT JOIN tournament_registrations tr ON tr.playerId = p.id AND tr.tournamentId = g.tournamentId
+             LEFT JOIN tournament_categories tcat ON tr.categoryId = tcat.id
+             WHERE g.tournamentId = ?`, [tournamentId]
+        );
+
+        const [allScores]: any[] = await connection.execute(
+            `SELECT s.playerId, s.holeNumber, s.strokes FROM scores s JOIN \`groups\` g ON s.groupId = g.id WHERE g.tournamentId = ?`,
+            [tournamentId]
+        );
+
+        const fullLeaderboard: ScorecardPlayer[] = [];
+        const categories: { [key: string]: ScorecardPlayer[] } = {};
+
+        for (const p of playerData) {
+            const playerScores = allScores.filter(s => s.playerId === p.playerId);
+            const totalStrokes = playerScores.reduce((sum, s) => sum + (s.strokes || 0), 0);
+            const netScore = totalStrokes - (p.courseHandicap || 0);
+
+            const calculateTieBreak = (start: number, count: number) => playerScores.filter((s: any) => s.holeNumber >= start && s.holeNumber < start + count).reduce((sum: number, s: any) => sum + (s.strokes || 0), 0);
+            const tieBreakScores = { last9: calculateTieBreak(10, 9), last6: calculateTieBreak(13, 6), last3: calculateTieBreak(16, 3), last1: playerScores.find((s: any) => s.holeNumber === 18)?.strokes || 0 };
+
+            const playerEntry: ScorecardPlayer = { id: p.playerId, fullName: p.fullName, courseHandicap: p.courseHandicap, categoryName: p.categoryName || 'N/A', scores: playerScores, totalStrokes, netScore };
+            fullLeaderboard.push(playerEntry);
+
+            if (p.categoryName) {
+                if (!categories[p.categoryName]) categories[p.categoryName] = [];
+                categories[p.categoryName].push(playerEntry);
+            }
+        }
+        
+        const tiebreakSort = (a: any, b: any) => {
+            if (a.netScore !== b.netScore) return (a.netScore || 0) - (b.netScore || 0);
+            const reasonA = a.tieBreakReason || '';
+            const reasonB = b.tieBreakReason || '';
+            if (a.tieBreakScores.last9 !== b.tieBreakScores.last9) { a.tieBreakReason = b.tieBreakReason = 'Desempate: Últimos 9'; return a.tieBreakScores.last9 - b.tieBreakScores.last9; }
+            if (a.tieBreakScores.last6 !== b.tieBreakScores.last6) { a.tieBreakReason = b.tieBreakReason = 'Desempate: Últimos 6'; return a.tieBreakScores.last6 - b.tieBreakScores.last6; }
+            if (a.tieBreakScores.last3 !== b.tieBreakScores.last3) { a.tieBreakReason = b.tieBreakReason = 'Desempate: Últimos 3'; return a.tieBreakScores.last3 - b.tieBreakScores.last3; }
+            if (a.tieBreakScores.last1 !== b.tieBreakScores.last1) { a.tieBreakReason = b.tieBreakReason = 'Desempate: Último Buraco'; return a.tieBreakScores.last1 - b.tieBreakScores.last1; }
+            return 0;
+        };
+
+        fullLeaderboard.sort(tiebreakSort);
+
+        const workbook = new ExcelJS.Workbook();
+        
+        // Aba Leaderboard Geral
+        const generalSheet = workbook.addWorksheet('Leaderboard Geral (NET)');
+        buildLeaderboardSheet(generalSheet, `${tournamentInfo[0].name} - Leaderboard Geral (NET)`, fullLeaderboard);
+
+        // Aba Campeões Gross
+        const grossSheet = workbook.addWorksheet('Campeões Gross');
+        buildGrossChampionsSheet(grossSheet, fullLeaderboard);
+
+        // Abas por Categoria
+        for (const categoryName in categories) {
+            const categorySheet = workbook.addWorksheet(categoryName);
+            const categoryPlayers = categories[categoryName].sort(tiebreakSort);
+            buildLeaderboardSheet(categorySheet, `${tournamentInfo[0].name} - Categoria ${categoryName}`, categoryPlayers);
+        }
+
+        const fileName = `relatorio_completo_${tournamentInfo[0].name.replace(/\s+/g, '_')}.xlsx`;
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
+        await workbook.xlsx.write(res);
+        res.end();
+
+    } catch (error) {
+        console.error("Erro ao exportar relatório de torneio:", error);
+        res.status(500).json({ error: "Erro ao exportar." });
+    } finally {
+        if (connection) connection.release();
+    }
+});
 app.get("/api/courses", async (req: Request, res: Response) => {
     let connection;
     try {
@@ -1597,42 +2062,65 @@ app.get("/api/leaderboard/:tournamentId", async (req: Request, res: Response) =>
 });
 
 app.get("/api/history/player/:playerId", async (req: Request, res: Response) => {
+    const { playerId } = req.params;
     let connection;
     try {
-        const { playerId } = req.params;
         connection = await pool.getConnection();
-        
-        const [tournaments] = await connection.execute(
-            `SELECT t.id, t.name, t.date, c.name as courseName, 'tournament' as type, g.id as groupId
+
+        const [tournaments]: any[] = await connection.execute(
+            `SELECT
+                t.id,
+                t.name,
+                t.date,
+                t.finishedAt,
+                c.name as courseName,
+                'tournament' as type
              FROM tournaments t
-             JOIN \`groups\` g ON t.id = g.tournamentId
-             JOIN group_players gp ON g.id = gp.groupId
              JOIN courses c ON t.courseId = c.id
-             WHERE gp.playerId = ? AND t.status = 'completed'`,
-            [playerId]
-        );
-        
-        const [trainings] = await connection.execute(
-            `SELECT t.id, c.name as name, t.date, c.name as courseName, 'training' as type, tg.id as groupId
-             FROM trainings t
-             JOIN training_groups tg ON t.id = tg.trainingId
-             JOIN training_participants tp ON tg.id = tp.trainingGroupId
-             JOIN courses c ON t.courseId = c.id
-             WHERE tp.playerId = ? AND t.status = 'completed'`,
+             WHERE
+                t.status = 'completed'
+                AND EXISTS (
+                    SELECT 1
+                    FROM \`groups\` g
+                    JOIN group_players gp ON g.id = gp.groupId
+                    WHERE g.tournamentId = t.id AND gp.playerId = ?
+                )`,
             [playerId]
         );
 
-        const history = [...(tournaments as any[]), ...(trainings as any[])].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-        
+        const [trainings]: any[] = await connection.execute(
+            `SELECT
+                t.id,
+                'Sessão de Treino' as name,
+                t.date,
+                t.finishedAt,
+                c.name as courseName,
+                'training' as type,
+                tg.id as groupId
+             FROM trainings t
+             JOIN courses c ON t.courseId = c.id
+             JOIN training_groups tg ON t.id = tg.trainingId
+             WHERE
+                t.status = 'completed'
+                AND EXISTS (
+                    SELECT 1
+                    FROM training_participants tp
+                    WHERE tp.trainingGroupId = tg.id AND tp.playerId = ?
+                )`,
+            [playerId]
+        );
+
+        const history = [...tournaments, ...trainings];
+        history.sort((a, b) => new Date(b.finishedAt).getTime() - new Date(a.finishedAt).getTime());
+
         res.json(history);
     } catch (error) {
-        console.error("Erro ao buscar histórico do jogador:", error);
+        console.error("Erro ao buscar histórico unificado:", error);
         res.status(500).json({ error: "Erro ao buscar histórico." });
     } finally {
         if (connection) connection.release();
     }
 });
-
 
 app.get("/api/history/player/:playerId/tournament/:tournamentId", async (req: Request, res: Response) => {
     let connection;
@@ -1989,6 +2477,180 @@ app.get("/api/debug/tournaments/:tournamentId/registrations", async (req: Reques
             error: 'Erro ao buscar inscritos.',
             debug: { message: error.message, sqlMessage: error.sqlMessage, code: error.code }
         });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+const scorecardStyler = {
+    headerFill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F2937' } } as ExcelJS.Fill,
+    headerFont: { color: { argb: 'FF34D399' }, bold: true, size: 12 },
+    titleFont: { color: { argb: 'FFFFFFFF' }, bold: true, size: 16 },
+    subtitleFont: { color: { argb: 'FFD1D5DB' }, size: 11 },
+    parFont: { bold: true, color: { argb: 'FF34D399' } },
+    playerFont: { bold: true, color: { argb: 'FFFFFFFF' } },
+    totalsFont: { bold: true, color: { argb: 'FF34D399' } },
+    borderStyle: { style: 'thin', color: { argb: 'FF4B5563' } } as ExcelJS.Border,
+    applyBorders: (cell: ExcelJS.Cell) => {
+        cell.border = { top: scorecardStyler.borderStyle, left: scorecardStyler.borderStyle, bottom: scorecardStyler.borderStyle, right: scorecardStyler.borderStyle };
+    }
+};
+
+const buildHorizontalScorecard = async (sheet: ExcelJS.Worksheet, title: string, subtitle: string, courseData: CourseForScorecard, playersData: ScorecardPlayer[]) => {
+    
+    sheet.mergeCells('A1:X1');
+    sheet.getCell('A1').value = title;
+    sheet.getCell('A1').font = scorecardStyler.titleFont;
+    sheet.getCell('A1').alignment = { vertical: 'middle', horizontal: 'center' };
+    sheet.mergeCells('A2:X2');
+    sheet.getCell('A2').value = subtitle;
+    sheet.getCell('A2').font = scorecardStyler.subtitleFont;
+    sheet.getCell('A2').alignment = { vertical: 'middle', horizontal: 'center' };
+
+    const headers = ['JOGADOR', 'HDC', ...Array.from({ length: 9 }, (_, i) => i + 1), 'OUT', ...Array.from({ length: 9 }, (_, i) => i + 10), 'IN', 'TOTAL', 'NET'];
+    const headerRow = sheet.addRow(headers);
+    headerRow.font = scorecardStyler.headerFont;
+    headerRow.alignment = { horizontal: 'center' };
+    headerRow.eachCell(cell => {
+        scorecardStyler.applyBorders(cell);
+        cell.fill = scorecardStyler.headerFill;
+    });
+
+    const teeColors = Array.from(new Set(courseData.holes.flatMap((h: HoleWithTees) => h.tees.map((t: any) => t.color)))).sort();
+    const parRowData = ['PAR', null, ...courseData.holes.slice(0, 9).map((h: HoleWithTees) => h.par), 0, ...courseData.holes.slice(9, 18).map((h: HoleWithTees) => h.par), 0, 0, null];
+    const parRow = sheet.addRow(parRowData);
+    parRow.font = scorecardStyler.parFont;
+    parRow.alignment = { horizontal: 'center' };
+    parRow.eachCell(cell => scorecardStyler.applyBorders(cell));
+
+    teeColors.forEach(color => {
+        const teeRowData = [color, null, ...courseData.holes.map((h: HoleWithTees) => h.tees.find((t: any) => t.color === color)?.yardage || '-')];
+        sheet.addRow(teeRowData).alignment = { horizontal: 'center' };
+    });
+
+    playersData.forEach((player: ScorecardPlayer) => {
+        const scoresInOrder = Array.from({ length: 18 }, (_, i) => {
+            const holeNum = i + 1;
+            const score = player.scores.find(s => s.holeNumber === holeNum);
+            return score && score.strokes ? score.strokes : null;
+        });
+        const scoreRowData = [
+            player.fullName,
+            player.courseHandicap ?? null,
+            ...scoresInOrder.slice(0, 9),
+            null, 
+            ...scoresInOrder.slice(9, 18),
+            null, 
+            null,
+            null
+        ];
+        const scoreRow = sheet.addRow(scoreRowData);
+        scoreRow.getCell(1).font = scorecardStyler.playerFont;
+        scoreRow.eachCell(cell => scorecardStyler.applyBorders(cell));
+    });
+
+    const startDataRow = 4 + teeColors.length;
+    sheet.eachRow((row, rowNumber) => {
+        if (rowNumber >= startDataRow) { 
+            const outCell = row.getCell(12);
+            const inCell = row.getCell(22);
+            const totalCell = row.getCell(23);
+            const netCell = row.getCell(24);
+
+            outCell.value = { formula: `SUM(C${rowNumber}:K${rowNumber})` };
+            inCell.value = { formula: `SUM(M${rowNumber}:U${rowNumber})` };
+            totalCell.value = { formula: `L${rowNumber}+V${rowNumber}` };
+            
+            if (row.getCell(2).value) {
+                netCell.value = { formula: `W${rowNumber}-B${rowNumber}` };
+            }
+
+            outCell.font = inCell.font = totalCell.font = netCell.font = scorecardStyler.totalsFont;
+            [outCell, inCell, totalCell, netCell].forEach(cell => scorecardStyler.applyBorders(cell));
+        }
+    });
+    sheet.getColumn(1).width = 30;
+    sheet.getColumn(1).alignment = { horizontal: 'left', vertical: 'middle' };
+};
+// ROTA UNIFICADA CORRIGIDA
+app.get("/api/export/scorecard/:type/:groupId", async (req: Request, res: Response) => {
+    const { type, groupId } = req.params;
+    const { playerId } = req.query;
+
+    if (type !== 'training' && type !== 'tournament') {
+        return res.status(400).send('Tipo de exportação inválido. Use "training" ou "tournament".');
+    }
+    
+    let connection;
+    try {
+        connection = await pool.getConnection();
+
+        const isTournament = type === 'tournament';
+        const infoQuery = isTournament
+            ? `SELECT t.name as eventName, t.date, c.name as courseName, c.id as courseId FROM \`groups\` g JOIN tournaments t ON g.tournamentId = t.id JOIN courses c ON t.courseId = c.id WHERE g.id = ?`
+            : `SELECT 'Sessão de Treino' as eventName, t.date, c.name as courseName, c.id as courseId FROM training_groups tg JOIN trainings t ON tg.trainingId = t.id JOIN courses c ON t.courseId = c.id WHERE tg.id = ?`;
+
+        const [eventInfo]: any[] = await connection.execute(infoQuery, [groupId]);
+        if (eventInfo.length === 0) return res.status(404).send('Grupo não encontrado.');
+
+        const { eventName, date, courseName, courseId } = eventInfo[0];
+        
+        const [holes]: any[] = await connection.execute("SELECT * FROM holes WHERE courseId = ? ORDER BY holeNumber ASC", [courseId]);
+        for (const hole of holes) {
+            const [tees] = await connection.execute("SELECT * FROM tees WHERE holeId = ?", [hole.id]);
+            hole.tees = tees;
+        }
+
+        let playersQuery: string;
+        let queryParams: (string | number)[];
+
+        if (playerId) {
+            if (isTournament) {
+                playersQuery = `SELECT p.id, p.fullName, gp.courseHandicap, tcat.name as categoryName FROM players p JOIN group_players gp ON p.id = gp.playerId LEFT JOIN tournament_registrations tr ON tr.playerId = p.id AND tr.tournamentId = (SELECT tournamentId FROM \`groups\` WHERE id = ?) LEFT JOIN tournament_categories tcat ON tr.categoryId = tcat.id WHERE gp.groupId = ? AND p.id = ?`;
+                queryParams = [groupId, groupId, playerId as string];
+            } else {
+                playersQuery = `SELECT p.id, p.fullName, tp.courseHandicap FROM players p JOIN training_participants tp ON p.id = tp.playerId WHERE tp.trainingGroupId = ? AND p.id = ?`;
+                queryParams = [groupId, playerId as string];
+            }
+        } else {
+            if (isTournament) {
+                playersQuery = `SELECT p.id, p.fullName, gp.courseHandicap, tcat.name as categoryName FROM players p JOIN group_players gp ON p.id = gp.playerId LEFT JOIN tournament_registrations tr ON tr.playerId = p.id AND tr.tournamentId = (SELECT tournamentId FROM \`groups\` WHERE id = ?) LEFT JOIN tournament_categories tcat ON tr.categoryId = tcat.id WHERE gp.groupId = ?`;
+                queryParams = [groupId, groupId];
+            } else {
+                playersQuery = `SELECT p.id, p.fullName, tp.courseHandicap FROM players p JOIN training_participants tp ON p.id = tp.playerId WHERE tp.trainingGroupId = ?`;
+                queryParams = [groupId];
+            }
+        }
+
+        const [players]: any[] = await connection.execute(playersQuery, queryParams);
+
+        for (const player of (players as ScorecardPlayer[])) {
+            const scoresQuery = isTournament
+                ? `SELECT h.holeNumber, s.strokes FROM holes h LEFT JOIN scores s ON h.holeNumber = s.holeNumber AND s.playerId = ? AND s.groupId = ? WHERE h.courseId = ? ORDER BY h.holeNumber ASC`
+                : `SELECT h.holeNumber, s.strokes FROM holes h LEFT JOIN training_scores s ON h.holeNumber = s.holeNumber AND s.playerId = ? AND s.trainingGroupId = ? WHERE h.courseId = ? ORDER BY h.holeNumber ASC`;
+            
+            const [scores] = await connection.execute(scoresQuery, [player.id, groupId, courseId]);
+            player.scores = scores as any;
+        }
+
+        const workbook = new ExcelJS.Workbook();
+        const sheet = workbook.addWorksheet('Scorecard');
+        
+        await buildHorizontalScorecard(sheet, eventName, `${courseName} - ${new Date(date).toLocaleDateString('pt-BR')}`, { holes }, players);
+        
+        if (isTournament && !playerId) {
+            // Futuramente, a lógica de categorias e desempate pode ser adicionada aqui
+        }
+
+        const fileName = playerId ? `scorecard_individual_${players[0].fullName.replace(/\s+/g, '_')}.xlsx` : `scorecard_${type}_grupo_${groupId}.xlsx`;
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
+        await workbook.xlsx.write(res);
+        res.end();
+
+    } catch (error) {
+        console.error(`Erro ao exportar scorecard de ${type}:`, error);
+        res.status(500).json({ error: "Erro ao exportar." });
     } finally {
         if (connection) connection.release();
     }

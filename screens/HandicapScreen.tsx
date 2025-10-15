@@ -11,7 +11,7 @@ interface HandicapScreenProps {
   accessCode: string;
   onHandicapsSubmitted: () => void;
   user: User | null;
-  type: 'tournament' | 'training'; // <-- NOVO: Para saber qual API chamar
+  type: 'tournament' | 'training';
 }
 
 interface GroupPlayerData {
@@ -31,14 +31,12 @@ const HandicapScreen: React.FC<HandicapScreenProps> = ({ accessCode, onHandicaps
 
   useEffect(() => {
     const fetchGroupData = async () => {
-      if (!user) {
-          setError('Utilizador não autenticado.');
+      if (!user || !accessCode) { // Verificação robusta
+          setError('Utilizador não autenticado ou código de acesso inválido.');
           setLoading(false);
           return;
       }
       try {
-        // --- LÓGICA CORRIGIDA ---
-        // Escolhe a URL certa com base no tipo (torneio ou treino)
         const url = type === 'tournament'
             ? `${import.meta.env.VITE_API_URL}/api/scorecard/${accessCode}?playerId=${user.id}`
             : `${import.meta.env.VITE_API_URL}/api/trainings/scorecard/${accessCode}?playerId=${user.id}`;
@@ -67,7 +65,6 @@ const HandicapScreen: React.FC<HandicapScreenProps> = ({ accessCode, onHandicaps
     }
 
     try {
-      // A lógica de submissão de handicap pode ser a mesma para ambos por enquanto
       await axios.post(`${import.meta.env.VITE_API_URL}/api/groups/handicaps`, {
         groupId: groupData?.groupId,
         handicaps: handicaps

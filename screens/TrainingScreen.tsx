@@ -1,4 +1,4 @@
-// screens/TrainingScreen.tsx
+// screens/TrainingScreen.tsx - VERSÃO ATUALIZADA
 
 import React, { useState, useEffect, useContext, useCallback } from 'react';
 import axios from 'axios';
@@ -21,15 +21,17 @@ const TrainingScreen: React.FC<TrainingScreenProps> = ({ onBack, onStartScoring 
     const [view, setView] = useState<TrainingView>('LIST');
     const [activeTraining, setActiveTraining] = useState<any | null>(null);
     const [myTrainings, setMyTrainings] = useState<any[]>([]);
-    const [invitations, setInvitations] = useState<any[]>([]); // Estado para convites
+    const [invitations, setInvitations] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+
+    // Verifica se já existe um treino ativo
+    const hasActiveTraining = myTrainings.length > 0;
 
     const fetchData = useCallback(async () => {
         if (!user) return;
         setLoading(true);
         try {
-            // Busca treinos ativos e convites pendentes em paralelo
             const [trainingsRes, invitesRes] = await Promise.all([
                 axios.get(`${import.meta.env.VITE_API_URL}/api/users/${user.id}/trainings`),
                 axios.get(`${import.meta.env.VITE_API_URL}/api/users/${user.id}/invitations`)
@@ -44,7 +46,6 @@ const TrainingScreen: React.FC<TrainingScreenProps> = ({ onBack, onStartScoring 
     }, [user]);
 
     useEffect(() => {
-        // Busca os dados sempre que o utilizador voltar para a lista principal
         if (view === 'LIST') {
             fetchData();
         }
@@ -54,9 +55,21 @@ const TrainingScreen: React.FC<TrainingScreenProps> = ({ onBack, onStartScoring 
         try {
             await axios.patch(`${import.meta.env.VITE_API_URL}/api/trainings/invitations/${inviteId}`, { status });
             alert(`Convite ${status === 'accepted' ? 'aceite' : 'recusado'}!`);
-            fetchData(); // Recarrega os dados para atualizar as listas
+            fetchData();
         } catch (error) {
             alert("Erro ao responder ao convite.");
+        }
+    };
+    
+    const handleDeleteTraining = async (trainingId: number) => {
+        if (window.confirm("Tem a certeza de que quer apagar este treino? Esta ação não pode ser desfeita.")) {
+            try {
+                await axios.delete(`${import.meta.env.VITE_API_URL}/api/trainings/${trainingId}/creator/${user?.id}`);
+                alert("Treino apagado com sucesso!");
+                fetchData();
+            } catch (error: any) {
+                alert(error.response?.data?.error || "Não foi possível apagar o treino.");
+            }
         }
     };
 
@@ -67,7 +80,6 @@ const TrainingScreen: React.FC<TrainingScreenProps> = ({ onBack, onStartScoring 
 
     const handleTrainingCreated = (newTrainingData: any) => {
         setIsCreateModalOpen(false);
-        // Leva o utilizador diretamente para a gestão de convites do novo treino
         handleManageTraining(newTrainingData);
     };
     
@@ -79,12 +91,11 @@ const TrainingScreen: React.FC<TrainingScreenProps> = ({ onBack, onStartScoring 
 
     if (loading) return <Spinner />;
 
-    // Renderiza o ecrã de gestão de convites quando ativo
     if (view === 'MANAGE' && activeTraining) {
         return (
             <ManageTrainingScreen 
                 trainingData={activeTraining}
-                onBack={() => setView('LIST')} // Define a ação de voltar
+                onBack={() => setView('LIST')}
                 onStartTraining={onStartScoring}
             />
         );
@@ -109,7 +120,6 @@ const TrainingScreen: React.FC<TrainingScreenProps> = ({ onBack, onStartScoring 
                     </div>
                 </div>
                 
-                {/* Secção de Convites Restaurada */}
                 <div>
                     <h2 className="text-2xl font-bold text-green-400 mb-4">Convites Pendentes</h2>
                     {invitations.length === 0 ? (
@@ -125,7 +135,7 @@ const TrainingScreen: React.FC<TrainingScreenProps> = ({ onBack, onStartScoring 
                                         <p className="text-sm text-gray-400">{invite.courseName} em {new Date(invite.date).toLocaleDateString('pt-BR', {timeZone: 'UTC'})}</p>
                                     </div>
                                     <div className="flex gap-2">
-                                        <Button size="sm" onClick={() => handleInvitationResponse(invite.invitationId, 'accepted')}>Aceitar</Button>
+                                        <Button size="sm" onClick={() => handleInvitationResponse(invite.invitationId, 'accepted')} disabled={hasActiveTraining} title={hasActiveTraining ? "Finalize seu treino atual para aceitar um convite." : "Aceitar convite"}>Aceitar</Button>
                                         <Button size="sm" variant="danger" onClick={() => handleInvitationResponse(invite.invitationId, 'declined')}>Recusar</Button>
                                     </div>
                                 </div>
@@ -137,7 +147,7 @@ const TrainingScreen: React.FC<TrainingScreenProps> = ({ onBack, onStartScoring 
                 <div>
                     <div className="flex justify-between items-center mb-4">
                         <h2 className="text-2xl font-bold text-green-400">Meus Treinos</h2>
-                        <Button onClick={() => setIsCreateModalOpen(true)}>
+                        <Button onClick={() => setIsCreateModalOpen(true)} disabled={hasActiveTraining} title={hasActiveTraining ? "Você já tem um treino ativo. Finalize-o para criar um novo." : "Criar um novo treino"}>
                             Criar Novo Treino
                         </Button>
                     </div>
@@ -157,11 +167,16 @@ const TrainingScreen: React.FC<TrainingScreenProps> = ({ onBack, onStartScoring 
                                        </div>
                                        <div className="flex flex-wrap gap-2 justify-end">
                                            {isCreator && (
-                                                <Button variant="secondary" size="sm" onClick={() => handleManageTraining(training)}>
-                                                    Gerir Convites
-                                                </Button>
+                                                <>
+                                                    <Button variant="secondary" size="sm" onClick={() => handleManageTraining(training)}>
+                                                        Gerir Convites
+                                                    </Button>
+                                                    <Button variant="danger" size="sm" onClick={() => handleDeleteTraining(training.id)}>
+                                                        Remover
+                                                    </Button>
+                                                </>
                                            )}
-                                           <Button size="sm" onClick={() => handleStartWithConfirmation(training)}>
+                                           <Button size="sm" onClick={() => onStartScoring(training.accessCode)}>
                                                 Iniciar Partida
                                            </Button>
                                        </div>
