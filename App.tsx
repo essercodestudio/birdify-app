@@ -1,4 +1,4 @@
-// App.tsx - VERSÃO COMPLETA E ATUALIZADA COM ROTAS DE ADMIN
+// essercodestudio/birdify-app/birdify-app-292f4c7e273124d606a73f19222b8d25fd42d22f/App.tsx
 
 import React, { useState, useMemo, useEffect, useContext } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
@@ -11,12 +11,9 @@ import ResetPasswordScreen from "./screens/ResetPasswordScreen";
 import PrivacyPolicyScreen from "./screens/PrivacyPolicyScreen";
 import TermsOfUseScreen from "./screens/TermsOfUseScreen";
 import TournamentRegistrationScreen from "./screens/TournamentRegistrationScreen";
-// Importar as telas de administração
 import AdminDashboardScreen from "./screens/AdminDashboardScreen";
-import ManageTournamentDetailsScreen from "./screens/ManageTournamentDetailsScreen";
-import ManageGroups from "./components/admin/ManageGroups";
+import PlayerDetailScreen from "./screens/PlayerDetailScreen"; // Importar a nova tela
 
-// Componente para proteger rotas que precisam de login
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const { user } = useContext(AuthContext);
     if (!user) {
@@ -25,63 +22,51 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
     return <>{children}</>;
 };
 
-// Componente para proteger rotas de admin (requer que user.isAdmin seja true)
 const AdminRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const { user } = useContext(AuthContext);
-    if (!user || !user.isAdmin) {
+    if (!user || user.role !== 'admin') {
         return <Navigate to="/" replace />;
     }
     return <>{children}</>;
 };
 
-// Componente que define todas as rotas da aplicação
 const AppRoutes: React.FC = () => {
     const { user } = useContext(AuthContext);
 
     return (
         <Layout>
             <Routes>
-                {/* Rotas Públicas */}
                 <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginScreen />} />
                 <Route path="/reset/:token" element={<ResetPasswordScreen />} />
                 <Route path="/privacy-policy" element={<PrivacyPolicyScreen />} />
                 <Route path="/terms-of-use" element={<TermsOfUseScreen />} />
-                
-                {/* Rota de Inscrição (requer login, mas o componente trata do redirecionamento) */}
                 <Route path="/register/:tournamentId" element={<TournamentRegistrationScreen />} />
 
-                {/* Rotas de Administração */}
-                <Route path="/admin/dashboard" element={
-                    <AdminRoute>
-                        <AdminDashboardScreen />
-                    </AdminRoute>
+                {/* Rota de Detalhes do Jogador */}
+                <Route path="/leaderboard/:tournamentId/player/:playerId" element={
+                    <ProtectedRoute>
+                        <PlayerDetailScreen />
+                    </ProtectedRoute>
                 } />
-                <Route path="/admin/tournaments/:tournamentId" element={
+
+                <Route path="/admin" element={
                     <AdminRoute>
-                        <ManageTournamentDetailsScreen />
-                    </AdminRoute>
-                } />
-                <Route path="/admin/groups" element={
-                    <AdminRoute>
-                        <ManageGroups />
+                        <AdminDashboardScreen onBack={() => window.history.back()} />
                     </AdminRoute>
                 } />
 
-                {/* Rota Principal Protegida */}
                 <Route path="/" element={
                     <ProtectedRoute>
                         <MainScreen />
                     </ProtectedRoute>
                 } />
                 
-                {/* Rota de fallback para qualquer outro caminho */}
                 <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
         </Layout>
     );
 };
 
-// Componente principal da aplicação (mantém igual)
 const App: React.FC = () => {
     const [user, setUser] = useState<User | null>(() => {
         try {
@@ -106,7 +91,6 @@ const App: React.FC = () => {
             login: (loggedInUser: User) => setUser(loggedInUser),
             logout: () => {
                 setUser(null);
-                // Limpa a "memória" da última tela visitada ao fazer logout
                 localStorage.removeItem('activeScreen');
                 localStorage.removeItem('activeAccessCode');
                 localStorage.removeItem('selectedTournamentId');

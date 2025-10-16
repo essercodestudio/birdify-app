@@ -1,10 +1,13 @@
+// essercodestudio/birdify-app/birdify-app-292f4c7e273124d606a73f19222b8d25fd42d22f/screens/MainScreen.tsx
+
 import React, { useState, useContext, useCallback, useEffect } from "react";
 import axios from "axios";
 import { AuthContext } from "../context/AuthContext";
 import AdminDashboardScreen from "./AdminDashboardScreen";
 import HandicapScreen from "./HandicapScreen";
 import HistoryScreen from "./HistoryScreen";
-import PlayerStatsScreen from "./PlayerStatsScreen";
+// A linha abaixo foi removida pois o componente não será mais usado
+// import PlayerStatsScreen from "./PlayerStatsScreen"; 
 import Button from "../components/Button";
 import Spinner from "../components/Spinner";
 import ProfileScreen from "./ProfileScreen";
@@ -13,7 +16,7 @@ import TrainingHistoryScreen from "./TrainingHistoryScreen";
 import ScorecardScreen from "./ScorecardScreen";
 import TournamentListScreen from "./TournamentListScreen";
 import TournamentResultScreen from "./TournamentResultScreen";
-import LeaderboardScreen from "./LeaderboardScreen"; // Importação restaurada
+import LeaderboardScreen from "./LeaderboardScreen";
 
 // Ícones
 import ChevronRightIcon from '../components/icons/ChevronRightIcon';
@@ -130,7 +133,8 @@ const MainScreen: React.FC = () => {
             case "SCORECARD_TRAINING": return <ScorecardScreen accessCode={accessCode} onBack={handleBackToHome} type="training" onFinishTraining={handleFinishTrainingAndGoToHistory} />;
             case "ADMIN_DASHBOARD": return <AdminDashboardScreen onBack={handleBackToHome} />;
             case "PROFILE": return <ProfileScreen onBack={handleBackToHome} />;
-            case "STATS": return <PlayerStatsScreen onBack={handleBackToHome} />;
+            // A linha abaixo foi removida
+            // case "STATS": return <PlayerStatsScreen onBack={handleBackToHome} />;
             case "HISTORY": return <HistoryScreen onBack={handleBackToHome} />;
             case "TRAINING_HISTORY": return <TrainingHistoryScreen onBack={handleBackToHome} />;
             case "TOURNAMENT_LIST": return <TournamentListScreen onBack={handleBackToHome} onSelectTournament={handleSelectTournamentResults} />;

@@ -1,3 +1,5 @@
+// essercodestudio/birdify-app/birdify-app-292f4c7e273124d606a73f19222b8d25fd42d22f/screens/TournamentResultScreen.tsx
+
 import React, { useState, useEffect, useContext } from 'react';
 import axios from 'axios';
 import { AuthContext } from '../context/AuthContext';
@@ -12,11 +14,13 @@ const TournamentResultScreen = ({ tournamentId, onBack }) => {
     const { user } = useContext(AuthContext);
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
-    const [selectedPlayer, setSelectedPlayer] = useState(null); // Estado para o modal
+    // Estado para controlar qual jogador está selecionado para ver o detalhe
+    const [selectedPlayer, setSelectedPlayer] = useState(null); 
 
     useEffect(() => {
         const fetchResults = async () => {
             try {
+                // Rota que busca todos os dados necessários: campo, jogadores, categorias e scores
                 const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/tournaments/${tournamentId}/full-results`);
                 setData(response.data);
             } catch (error) {
@@ -29,7 +33,21 @@ const TournamentResultScreen = ({ tournamentId, onBack }) => {
     }, [tournamentId]);
 
     const handleExport = async () => {
-        // ... (código de exportação permanece igual)
+        try {
+            // A rota de exportação que já corrigimos no backend
+            const response = await axios.get(`${import.meta.env.VITE_API_URL}/api/export/scorecard/tournament/${tournamentId}`, { responseType: 'blob' });
+            const url = window.URL.createObjectURL(new Blob([response.data]));
+            const link = document.createElement('a');
+            link.href = url;
+            const tournamentName = data?.course?.courseName || 'torneio';
+            link.setAttribute('download', `relatorio_completo_${tournamentName.replace(/\s+/g, '_')}.xlsx`);
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+        } catch (error) {
+            alert('Erro ao exportar o relatório.');
+            console.error(error);
+        }
     };
 
     if (loading) return <Spinner />;
@@ -37,18 +55,22 @@ const TournamentResultScreen = ({ tournamentId, onBack }) => {
 
     const { course, players } = data;
 
+    // Lógica para separar jogadores por categoria (Masculino, Feminino, etc.)
     const playersByCategory = players.reduce((acc, player) => {
+        // Usa 'Geral' se a categoria não estiver definida
         const category = player.categoryName || 'Geral';
         if (!acc[category]) acc[category] = [];
         acc[category].push(player);
         return acc;
     }, {});
-
-    const sortedNet = [...players].sort((a, b) => a.netScore - b.netScore);
-    const sortedGross = [...players].sort((a, b) => a.totalStrokes - b.totalStrokes);
+    
+    // Ordena as categorias para exibição (ex: Feminino, Masculino, Sênior)
+    const sortedCategories = Object.keys(playersByCategory).sort();
+    const sortedGross = [...players].sort((a, b) => (a.totalStrokes ?? 999) - (b.totalStrokes ?? 999));
 
     return (
         <>
+            {/* O Modal do scorecard do jogador só aparece se um jogador for selecionado */}
             {selectedPlayer && (
                 <PlayerScorecardModal 
                     player={selectedPlayer} 
@@ -63,23 +85,36 @@ const TournamentResultScreen = ({ tournamentId, onBack }) => {
                             <ChevronLeftIcon className="h-6 w-6" />
                         </Button>
                         <div>
-                            <h1 className="text-3xl font-bold text-white">{course.name}</h1>
+                            <h1 className="text-3xl font-bold text-white">{course.courseName}</h1>
                             <p className="text-slate-400">{new Date(course.date).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}</p>
                         </div>
                     </div>
+                    {/* Botão de exportar visível apenas para admins */}
                     {user?.role === 'admin' && (
-                        <Button onClick={handleExport}>Exportar Resultados para Excel</Button>
+                        <Button onClick={handleExport}>Exportar Resultados</Button>
                     )}
                 </div>
 
                 <CourseInfoTable course={course} />
                 
-                {Object.keys(playersByCategory).sort().map(category => (
-                    <ResultsTable key={category} title={`Categoria: ${category}`} players={playersByCategory[category]} onPlayerClick={setSelectedPlayer} />
+                {/* Mapeia e exibe uma tabela de resultados NET para cada categoria */}
+                {sortedCategories.map(category => (
+                    <ResultsTable 
+                        key={category} 
+                        title={`Resultado NET: ${category}`} 
+                        players={playersByCategory[category]} 
+                        onPlayerClick={setSelectedPlayer}
+                        type="net"
+                    />
                 ))}
 
-                <ResultsTable title="Classificação Gross Geral" players={sortedGross} type="gross" onPlayerClick={setSelectedPlayer} />
-                <ResultsTable title="Classificação Net Geral" players={sortedNet} type="net" onPlayerClick={setSelectedPlayer} />
+                {/* Tabela separada para o resultado GROSS geral */}
+                <ResultsTable 
+                    title="Resultado GROSS Geral" 
+                    players={sortedGross} 
+                    onPlayerClick={setSelectedPlayer}
+                    type="gross"
+                />
             </div>
         </>
     );

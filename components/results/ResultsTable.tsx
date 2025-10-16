@@ -1,10 +1,13 @@
+// essercodestudio/birdify-app/birdify-app-292f4c7e273124d606a73f19222b8d25fd42d22f/components/results/ResultsTable.tsx
+
 import React from 'react';
 
 const ResultsTable = ({ title, players, type = 'net', onPlayerClick }) => {
-    // Ordena os jogadores com base no tipo de score, garantindo que valores nulos ou indefinidos sejam tratados
+    // Ordena os jogadores com base no tipo de score (Net ou Gross)
     const sortedPlayers = [...players].sort((a, b) => {
         const scoreA = type === 'gross' ? a.totalStrokes : a.netScore;
         const scoreB = type === 'gross' ? b.totalStrokes : b.netScore;
+        // Trata valores nulos ou indefinidos, colocando-os no final
         return (scoreA ?? 999) - (scoreB ?? 999);
     });
 
@@ -26,6 +29,7 @@ const ResultsTable = ({ title, players, type = 'net', onPlayerClick }) => {
                         <tr key={player.playerId} className="bg-slate-800 hover:bg-slate-700">
                             <td className="p-2 border border-slate-600 font-bold">{index + 1}</td>
                             <td className="p-2 border border-slate-600 text-left">
+                                {/* O nome do jogador é um botão para abrir os detalhes */}
                                 <button onClick={() => onPlayerClick(player)} className="font-semibold text-white hover:text-emerald-400 transition-colors text-left w-full">
                                     {player.fullName}
                                 </button>
