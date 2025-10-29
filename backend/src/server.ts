@@ -18,14 +18,14 @@ const port = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
-const uploadsDir = path.join(__dirname, "uploads");
+const uploadsDir = path.join(process.cwd(), "uploads");
 if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
 }
 app.use("/uploads", express.static(uploadsDir));
 
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, "uploads/"),
+    destination: (req, file, cb) => cb(null, uploadsDir),
     filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`),
 });
 const upload = multer({ storage: storage });
@@ -41,7 +41,32 @@ const dbConfig = {
 };
 const pool = mysql.createPool(dbConfig);
 
-// --- TIPOS E INTERFACES ATUALIZADAS ---
+// --- INTERFACES (Incluindo ScoreQueryResult) ---
+interface ScoreQueryResult { // <--- Definição necessária
+    playerId: number;
+    holeNumber: number;
+    strokes: number | null;
+}
+interface PlayerQueryResult {
+    id: number;
+    playerId: number;
+    fullName: string;
+    gender: 'Male' | 'Female';
+    courseHandicap?: number;
+}
+interface TeeData {
+    id: number;
+    holeId: number;
+    color: string;
+    yardage: number;
+}
+interface HoleQueryResult {
+    id: number;
+    holeNumber: number;
+    par: number;
+    aerialImageUrl?: string | null;
+    tees: TeeData[]; // Obrigatório
+}
 interface ScorecardPlayer {
     id: number;
     playerId: number;
@@ -59,77 +84,237 @@ interface ScorecardPlayer {
     through?: number;
 }
 interface HoleWithTees {
-    id: number; // Adicionado ID para garantir unicidade
+    id: number;
     holeNumber: number;
     par: number;
-    tees: { color: string, yardage: number }[];
+    tees: TeeData[]; // Tipo consistente
 }
 interface CourseForScorecard {
     holes: HoleWithTees[];
 }
+// Interface para jogador na nova rota de leaderboard de treino
+interface TrainingLeaderboardPlayer {
+    playerId: number;
+    fullName: string;
+    gender: 'Male' | 'Female'; // Adicionado se precisar
+    totalStrokes: number;
+    through: number;
+    toParGross: number;
+}
 
-// --- ROTAS DE TREINO (Sem alterações) ---
 app.post("/api/trainings", async (req: Request, res: Response) => {
-    const { courseId, creatorId, date, startHole } = req.body;
+    const { courseId, creatorId, date, startHole, type = 'single_group' } = req.body; // Aceita 'type'
     let connection;
     try {
         connection = await pool.getConnection();
         await connection.beginTransaction();
 
+        const initialStatus = type === 'multi_group' ? 'awaiting_groups' : 'active'; // Status inicial
+        // !! GARANTA QUE A COLUNA 'type' EXISTE NA TABELA 'trainings' !!
         const [trainingResult]: any = await connection.execute(
-            "INSERT INTO trainings (courseId, creatorId, date, status) VALUES (?, ?, ?, 'active')",
-            [courseId, creatorId, date]
+            "INSERT INTO trainings (courseId, creatorId, date, status, type) VALUES (?, ?, ?, ?, ?)",
+            [courseId, creatorId, date, initialStatus, type]
         );
         const trainingId = trainingResult.insertId;
+
         const accessCode = Math.random().toString(36).substring(2, 8).toUpperCase();
         const [groupResult]: any = await connection.execute(
             "INSERT INTO training_groups (trainingId, startHole, accessCode) VALUES (?, ?, ?)",
             [trainingId, startHole, accessCode]
         );
         const trainingGroupId = groupResult.insertId;
+
         await connection.execute(
             "INSERT INTO training_participants (trainingGroupId, playerId, isResponsible, invitationStatus) VALUES (?, ?, ?, 'accepted')",
             [trainingGroupId, creatorId, 1]
         );
+
         await connection.commit();
-
         const [courseInfo]: any[] = await connection.execute("SELECT name FROM courses WHERE id = ?", [courseId]);
-
         res.status(201).json({
-            id: trainingId,
-            trainingGroupId,
-            accessCode,
-            date,
-            courseName: courseInfo[0].name,
-            creatorId,
-            status: 'active'
+            id: trainingId, trainingGroupId, accessCode, date,
+            courseName: courseInfo.length > 0 ? courseInfo[0].name : 'Campo Desconhecido',
+            creatorId, status: initialStatus, type
         });
     } catch (error) {
+         if (connection) await connection.rollback();
+         console.error("Erro ao criar treino:", error);
+         res.status(500).json({ error: "Erro ao criar treino." });
+    } finally {
+         if (connection) connection.release();
+    }
+});
+// NOVA ROTA para adicionar grupo a treino existente ('Jogo de Aposta')
+app.post("/api/trainings/:trainingId/groups", async (req: Request, res: Response) => {
+    const { trainingId } = req.params;
+    const { startHole, players, responsiblePlayerId } = req.body; // 'players' deve ser array [{id: number}, ...]
+
+    // Validações
+    if (!startHole || !Array.isArray(players) || players.length === 0 || !responsiblePlayerId) {
+        return res.status(400).json({ error: "Dados inválidos para criar novo grupo." });
+    }
+    if (!players.find(p => p.id === responsiblePlayerId)) {
+        return res.status(400).json({ error: "O jogador responsável deve estar na lista de jogadores." });
+    }
+
+    let connection;
+    try {
+        connection = await pool.getConnection();
+        // Verifica se o treino existe e é do tipo 'multi_group' (opcional, mas recomendado)
+        const [trainingRows]: any = await connection.execute("SELECT id, type FROM trainings WHERE id = ?", [trainingId]);
+        if (trainingRows.length === 0) {
+            return res.status(404).json({ error: "Jogo de Aposta principal não encontrado." });
+        }
+        // if (trainingRows[0].type !== 'multi_group') {
+        //     return res.status(400).json({ error: "Este treino não permite múltiplos grupos." });
+        // }
+
+        await connection.beginTransaction();
+
+        // Cria o novo grupo
+        const accessCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+        const [groupResult]: any = await connection.execute(
+            "INSERT INTO training_groups (trainingId, startHole, accessCode) VALUES (?, ?, ?)",
+            [trainingId, startHole, accessCode]
+        );
+        const newGroupId = groupResult.insertId;
+
+        // Adiciona os participantes a este novo grupo
+        const participantValues = players.map(player => [
+            newGroupId,
+            player.id,
+            player.id === responsiblePlayerId ? 1 : 0, // Marca o responsável
+            'accepted' // Assume aceite ao criar
+        ]);
+        await connection.query(
+            "INSERT INTO training_participants (trainingGroupId, playerId, isResponsible, invitationStatus) VALUES ?",
+            [participantValues]
+        );
+
+        await connection.commit();
+
+        res.status(201).json({
+            message: "Novo grupo adicionado ao Jogo de Aposta!",
+            trainingGroupId: newGroupId,
+            accessCode: accessCode // Código SÓ para este novo grupo
+        });
+
+    } catch (error) {
         if (connection) await connection.rollback();
-        console.error("Erro ao criar treino:", error);
-        res.status(500).json({ error: "Erro ao criar treino." });
+        console.error("Erro ao adicionar grupo ao treino:", error);
+        res.status(500).json({ error: "Erro interno ao adicionar grupo." });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+app.get("/api/trainings/:trainingId/leaderboard", async (req: Request, res: Response) => {
+    const { trainingId } = req.params;
+    let connection;
+
+    try {
+        connection = await pool.getConnection();
+
+        // Buscar info do treino e campo
+        const [trainingInfo]: any[] = await connection.execute(
+            `SELECT t.id, t.date, c.name as courseName, c.id as courseId, t.type
+             FROM trainings t
+             JOIN courses c ON t.courseId = c.id
+             WHERE t.id = ?`, [trainingId]
+        );
+        if (trainingInfo.length === 0) {
+            return res.status(404).json({ error: "Treino não encontrado." });
+        }
+        const { courseId, courseName } = trainingInfo[0];
+
+        // Buscar PARs
+        const [holesResult]: any[] = await connection.execute(
+            "SELECT holeNumber, par FROM holes WHERE courseId = ? ORDER BY holeNumber", [courseId]
+        );
+        const parMap = new Map(holesResult.map((h: { holeNumber: number, par: number }) => [h.holeNumber, h.par]));
+
+        // Buscar TODOS os grupos deste treino
+        const [groups]: any[] = await connection.execute(
+            "SELECT id FROM training_groups WHERE trainingId = ?", [trainingId]
+        );
+        if (groups.length === 0) {
+            return res.json({ trainingName: `Jogo em ${courseName}`, leaderboard: [] });
+        }
+        const groupIds = groups.map((g: { id: number }) => g.id);
+
+        // Buscar TODOS os participantes destes grupos
+        // Definindo um tipo para o participante aqui
+        interface ParticipantInfo { playerId: number; fullName: string; gender: 'Male' | 'Female'; }
+        const [participants]: any[] = await connection.execute(
+            `SELECT DISTINCT p.id as playerId, p.fullName, p.gender
+             FROM training_participants tp
+             JOIN players p ON tp.playerId = p.id
+             WHERE tp.trainingGroupId IN (?) AND tp.invitationStatus = 'accepted'`,
+            [groupIds]
+        );
+
+        // Buscar TODOS os scores destes grupos
+        const [allScoresResult]: any[] = await connection.execute(
+            `SELECT playerId, holeNumber, strokes
+             FROM training_scores
+             WHERE trainingGroupId IN (?)`,
+            [groupIds]
+        );
+        const allScores: ScoreQueryResult[] = allScoresResult as ScoreQueryResult[];
+
+        // Calcular leaderboard combinado
+        // CORREÇÃO: Adicionar tipo explícito para 'player' (usando ParticipantInfo)
+        const leaderboardData: TrainingLeaderboardPlayer[] = participants.map((player: ParticipantInfo): TrainingLeaderboardPlayer => {
+            const playerScores = allScores.filter(s => s.playerId === player.playerId);
+            const totalStrokes = playerScores.reduce((sum, s) => sum + (s.strokes || 0), 0);
+            let parThrough = 0;
+            playerScores.forEach(s => {
+                parThrough += Number(parMap.get(s.holeNumber) ?? 0);
+            });
+            const holesPlayed = playerScores.filter(s => s.strokes !== null).length;
+
+            return {
+                playerId: player.playerId,
+                fullName: player.fullName,
+                gender: player.gender, // Incluído se necessário depois
+                totalStrokes,
+                through: holesPlayed,
+                toParGross: totalStrokes - parThrough,
+            };
+        });
+
+        // Ordenar por Gross Score
+        // CORREÇÃO: Adicionar tipos explícitos para 'a' e 'b' (usando TrainingLeaderboardPlayer)
+        leaderboardData.sort((a: TrainingLeaderboardPlayer, b: TrainingLeaderboardPlayer) => {
+            const scoreDiff = a.totalStrokes - b.totalStrokes;
+            if (scoreDiff !== 0) return scoreDiff;
+            return a.fullName.localeCompare(b.fullName); // Desempate por nome
+        });
+
+        res.json({
+            trainingName: `Jogo em ${courseName}`,
+            leaderboard: leaderboardData
+        });
+
+    } catch (error) {
+        console.error("Erro ao gerar leaderboard de treino:", error);
+        res.status(500).json({ error: "Erro interno ao gerar placar do treino." });
     } finally {
         if (connection) connection.release();
     }
 });
 
 app.delete("/api/trainings/:trainingId/creator/:creatorId", async (req: Request, res: Response) => {
+    // ... (código existente sem alterações nos tipos) ...
     const { trainingId, creatorId } = req.params;
     let connection;
     try {
         connection = await pool.getConnection();
-
-        const [trainingRows]: any[] = await connection.execute(
-            "SELECT creatorId FROM trainings WHERE id = ?",
-            [trainingId]
-        );
-
+        const [trainingRows]: any[] = await connection.execute( "SELECT creatorId FROM trainings WHERE id = ?", [trainingId] );
         if (trainingRows.length === 0 || trainingRows[0].creatorId.toString() !== creatorId) {
             return res.status(403).json({ error: "Apenas o criador pode apagar o treino." });
         }
-
         await connection.beginTransaction();
-
         const [groups]: any[] = await connection.execute("SELECT id FROM training_groups WHERE trainingId = ?", [trainingId]);
         if (groups.length > 0) {
             const groupIds = groups.map((g: any) => g.id);
@@ -137,9 +322,7 @@ app.delete("/api/trainings/:trainingId/creator/:creatorId", async (req: Request,
             await connection.query("DELETE FROM training_participants WHERE trainingGroupId IN (?)", [groupIds]);
             await connection.query("DELETE FROM training_groups WHERE trainingId = ?", [trainingId]);
         }
-
         await connection.execute("DELETE FROM trainings WHERE id = ?", [trainingId]);
-
         await connection.commit();
         res.status(200).json({ message: "Treino apagado com sucesso." });
     } catch (error) {
@@ -152,36 +335,37 @@ app.delete("/api/trainings/:trainingId/creator/:creatorId", async (req: Request,
 });
 
 app.get("/api/users/:userId/trainings", async (req: Request, res: Response) => {
+    // ... (código existente sem alterações nos tipos) ...
     const { userId } = req.params;
     let connection;
     try {
         connection = await pool.getConnection();
         const [trainings] = await connection.execute(
-            `SELECT t.id, t.date, t.status, c.name as courseName, tg.accessCode, t.creatorId, tg.id as trainingGroupId
+            `SELECT t.id, t.date, t.status, c.name as courseName, tg.accessCode, t.creatorId, tg.id as trainingGroupId, t.type
              FROM trainings t
              JOIN courses c ON t.courseId = c.id
              JOIN training_groups tg ON t.id = tg.trainingId
              JOIN training_participants tp ON tg.id = tp.trainingGroupId
-             WHERE tp.playerId = ? AND tp.invitationStatus = 'accepted' AND t.status = 'active'
+             WHERE tp.playerId = ? AND tp.invitationStatus = 'accepted' AND (t.status = 'active' OR t.status = 'awaiting_groups')
              ORDER BY t.date DESC`, [userId]
         );
         res.json(trainings);
     } catch (error) {
+        console.error("Erro ao buscar treinos ativos:", error);
         res.status(500).json({ error: "Erro ao buscar treinos ativos." });
     } finally {
         if (connection) connection.release();
     }
 });
 
-// --- DEMAIS ROTAS (sem alterações)... ---
-// ... (O restante das suas rotas de /api/trainings/*, /api/courses/*, etc., permanece aqui sem alterações) ...
 app.get("/api/trainings/history/player/:playerId", async (req: Request, res: Response) => {
+    // ... (código existente com a correção do sort) ...
     const { playerId } = req.params;
     let connection;
     try {
         connection = await pool.getConnection();
         const [trainings] = await connection.execute(
-            `SELECT t.id, t.date, t.finishedAt, c.name as courseName, tg.id as trainingGroupId
+            `SELECT t.id, t.date, t.finishedAt, c.name as courseName, tg.id as trainingGroupId, t.finishedAt
              FROM trainings t
              JOIN courses c ON t.courseId = c.id
              JOIN training_groups tg ON t.id = tg.trainingId
@@ -189,8 +373,11 @@ app.get("/api/trainings/history/player/:playerId", async (req: Request, res: Res
              WHERE tp.playerId = ? AND t.status = 'completed'
              ORDER BY t.finishedAt DESC`, [playerId]
         );
+        // CORREÇÃO: Adicionar ': any' aos parâmetros 'a' e 'b'
+        (trainings as any[]).sort((a: any, b: any) => (new Date(b.finishedAt).getTime() || 0) - (new Date(a.finishedAt).getTime() || 0));
         res.json(trainings);
     } catch (error) {
+        console.error("Erro ao buscar histórico:", error);
         res.status(500).json({ error: "Erro ao buscar histórico." });
     } finally {
         if (connection) connection.release();
@@ -199,6 +386,7 @@ app.get("/api/trainings/history/player/:playerId", async (req: Request, res: Res
 
 
 app.get("/api/trainings/groups/:groupId/participants", async (req: Request, res: Response) => {
+    // ... (código existente sem alterações nos tipos) ...
     const { groupId } = req.params;
     let connection;
     try {
@@ -208,9 +396,7 @@ app.get("/api/trainings/groups/:groupId/participants", async (req: Request, res:
              FROM training_participants tp
              JOIN players p ON tp.playerId = p.id
              WHERE tp.trainingGroupId = ?
-             ORDER BY p.fullName`,
-            [groupId]
-        );
+             ORDER BY p.fullName`, [groupId] );
         res.json(participants);
     } catch (error) {
         console.error("Erro ao buscar participantes do treino:", error);
@@ -221,7 +407,8 @@ app.get("/api/trainings/groups/:groupId/participants", async (req: Request, res:
 });
 
 app.get("/api/trainings/:trainingGroupId/export/:playerId", async (req: Request, res: Response) => {
-    let connection;
+    // ... (código existente sem alterações nos tipos) ...
+     let connection;
     try {
         const { trainingGroupId, playerId } = req.params;
         connection = await pool.getConnection();
@@ -232,7 +419,6 @@ app.get("/api/trainings/:trainingGroupId/export/:playerId", async (req: Request,
              JOIN courses c ON t.courseId = c.id
              WHERE tg.id = ?`, [trainingGroupId]
         );
-
         const [scores]: any[] = await connection.execute(
             `SELECT ts.holeNumber, ts.strokes, h.par, tee.yardage
              FROM training_scores ts
@@ -242,12 +428,8 @@ app.get("/api/trainings/:trainingGroupId/export/:playerId", async (req: Request,
              LEFT JOIN training_participants tp ON ts.playerId = tp.playerId AND ts.trainingGroupId = tp.trainingGroupId
              LEFT JOIN tees tee ON h.id = tee.holeId AND tp.teeColor = tee.color
              WHERE ts.trainingGroupId = ? AND ts.playerId = ?
-             ORDER BY ts.holeNumber`,
-            [trainingGroupId, playerId]
-        );
-
+             ORDER BY ts.holeNumber`, [trainingGroupId, playerId] );
         if (!playerInfo.length || !trainingInfo.length) return res.status(404).send("Dados não encontrados.");
-
         const workbook = new ExcelJS.Workbook();
         const sheet = workbook.addWorksheet('Cartão de Treino');
         sheet.mergeCells('A1:D1');
@@ -259,7 +441,6 @@ app.get("/api/trainings/:trainingGroupId/export/:playerId", async (req: Request,
         sheet.addRow([]);
         const headerRow = sheet.addRow(['Buraco', 'Distância', 'Par', 'Score']);
         headerRow.font = { bold: true };
-
         let totalStrokes = 0;
         if (Array.isArray(scores)) {
             scores.forEach((score: any) => {
@@ -267,12 +448,10 @@ app.get("/api/trainings/:trainingGroupId/export/:playerId", async (req: Request,
                 totalStrokes += score.strokes || 0;
             });
         }
-
         sheet.addRow([]);
         const totalRow = sheet.addRow(['Total', '', '', totalStrokes]);
         totalRow.font = { bold: true };
         sheet.columns.forEach((column: any) => { column.width = 15; });
-
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.setHeader('Content-Disposition', `attachment; filename=Cartao_Treino_${playerInfo[0].fullName.replace(/\s+/g, '_')}.xlsx`);
         await workbook.xlsx.write(res);
@@ -285,89 +464,72 @@ app.get("/api/trainings/:trainingGroupId/export/:playerId", async (req: Request,
     }
 });
 app.get("/api/trainings/export/grupo/:groupId", async (req: Request, res: Response) => {
+    // ... (código existente com correções de tipo 'p') ...
     const { groupId } = req.params;
     let connection;
     try {
         connection = await pool.getConnection();
-
-        // 1. Obter informações básicas do treino
         const [trainingInfo]: any[] = await connection.execute(
             `SELECT t.date, c.name as courseName, c.id as courseId
              FROM trainings t
              JOIN training_groups tg ON t.id = tg.trainingId
              JOIN courses c ON t.courseId = c.id
-             WHERE tg.id = ?`,
-            [groupId]
-        );
-
+             WHERE tg.id = ?`, [groupId] );
         if (trainingInfo.length === 0) {
             return res.status(404).send('Grupo de treino não encontrado.');
         }
-
-        // 2. Obter todos os participantes do grupo
-        const [players]: any[] = await connection.execute(
+        const [playersResult]: any[] = await connection.execute(
             `SELECT p.id, p.fullName
              FROM players p
              JOIN training_participants tp ON p.id = tp.playerId
-             WHERE tp.trainingGroupId = ? AND tp.invitationStatus = 'accepted'`,
-            [groupId]
-        );
-
+             WHERE tp.trainingGroupId = ? AND tp.invitationStatus = 'accepted'`, [groupId] );
+        const players: PlayerQueryResult[] = playersResult as PlayerQueryResult[]; // Cast
         const workbook = new ExcelJS.Workbook();
         const sheet = workbook.addWorksheet('Resultados do Grupo');
-
         sheet.mergeCells('A1:D1');
         sheet.getCell('A1').value = `Resultado do Grupo - ${trainingInfo[0].courseName}`;
         sheet.getCell('A1').font = { size: 16, bold: true };
         sheet.addRow(['Data', new Date(trainingInfo[0].date).toLocaleDateString('pt-BR', {timeZone: 'UTC'})]);
         sheet.addRow([]);
-
-        // 3. Montar o cabeçalho com os nomes dos jogadores
         const headers = ['Buraco', 'Par'];
-        players.forEach(p => headers.push(p.fullName));
+        // CORREÇÃO: Adicionar tipo explícito para 'p'
+        players.forEach((p: { id: number; fullName: string }) => headers.push(p.fullName));
         sheet.addRow(headers).font = { bold: true };
-
-        // 4. Buscar os buracos e, para cada um, buscar o score de cada jogador
-        const [holes]: any[] = await connection.execute('SELECT holeNumber, par FROM holes WHERE courseId = ? ORDER BY holeNumber', [trainingInfo[0].courseId]);
-
+        const [holesResult]: any[] = await connection.execute('SELECT holeNumber, par FROM holes WHERE courseId = ? ORDER BY holeNumber', [trainingInfo[0].courseId]);
+        const holes: { holeNumber: number; par: number }[] = holesResult as { holeNumber: number; par: number }[];
         const totals: Record<string, number> = {};
-        players.forEach(p => totals[p.id] = 0);
-
+        // CORREÇÃO: Adicionar tipo explícito para 'p'
+        players.forEach((p: { id: number; fullName: string }) => totals[p.id] = 0);
         for (const hole of holes) {
             const rowData: (string | number)[] = [hole.holeNumber, hole.par];
             for (const player of players) {
                 const [scoreResult]: any[] = await connection.execute(
                     `SELECT strokes FROM training_scores WHERE trainingGroupId = ? AND playerId = ? AND holeNumber = ?`,
-                    [groupId, player.id, hole.holeNumber]
-                );
-                const strokes = scoreResult[0]?.strokes || 0;
+                    [groupId, player.id, hole.holeNumber] );
+                const strokes = scoreResult[0]?.strokes ?? 0;
                 rowData.push(strokes);
                 totals[player.id] += strokes;
             }
             sheet.addRow(rowData);
         }
-
-        // 5. Adicionar a linha de totais
         const totalRow: (string | number)[] = ['Total', ''];
-        players.forEach(p => totalRow.push(totals[p.id]));
+        // CORREÇÃO: Adicionar tipo explícito para 'p'
+        players.forEach((p: { id: number; fullName: string }) => totalRow.push(totals[p.id]));
         sheet.addRow(totalRow).font = { bold: true };
-
         sheet.columns.forEach(column => {
-            let maxLength = 0;
-            column.eachCell!({ includeEmpty: true }, (cell) => {
-                const len = cell.value ? cell.value.toString().length : 10;
-                if (len > maxLength) {
-                    maxLength = len;
-                }
-            });
-            column.width = maxLength < 12 ? 12 : maxLength + 2;
+             if (column.eachCell) {
+                let maxLength = 0;
+                column.eachCell({ includeEmpty: true }, (cell) => {
+                    const len = cell.value ? cell.value.toString().length : 10;
+                    if (len > maxLength) { maxLength = len; }
+                });
+                column.width = maxLength < 12 ? 12 : maxLength + 2;
+            }
         });
-
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.setHeader('Content-Disposition', `attachment; filename=resultado_grupo_${groupId}.xlsx`);
         await workbook.xlsx.write(res);
         res.end();
-
     } catch (error) {
         console.error("Erro ao exportar resultado do grupo de treino:", error);
         res.status(500).json({ error: "Erro ao exportar." });
@@ -377,19 +539,22 @@ app.get("/api/trainings/export/grupo/:groupId", async (req: Request, res: Respon
 });
 
 app.get("/api/courses/public", async (req: Request, res: Response) => {
-  let connection;
-  try {
-    connection = await pool.getConnection();
-    const [rows] = await connection.execute("SELECT id, name FROM courses ORDER BY name ASC");
-    res.json(rows);
-  } catch (error) {
-    res.status(500).json({ error: "Erro ao buscar campos." });
-  } finally {
-    if (connection) connection.release();
-  }
+    // ... (código existente) ...
+    let connection;
+    try {
+        connection = await pool.getConnection();
+        const [rows] = await connection.execute("SELECT id, name FROM courses ORDER BY name ASC");
+        res.json(rows);
+    } catch (error) {
+        console.error("Erro ao buscar campos públicos:", error);
+        res.status(500).json({ error: "Erro ao buscar campos." });
+    } finally {
+        if (connection) connection.release();
+    }
 });
 
 app.get("/api/tournaments/:tournamentId/confirmed-players", async (req: Request, res: Response) => {
+    // ... (código existente) ...
     const { tournamentId } = req.params;
     let connection;
     try {
@@ -399,79 +564,62 @@ app.get("/api/tournaments/:tournamentId/confirmed-players", async (req: Request,
              FROM tournament_registrations tr
              JOIN players p ON tr.playerId = p.id
              WHERE tr.tournamentId = ? AND tr.paymentStatus = 'confirmed'
-             ORDER BY p.fullName ASC`, [tournamentId]
-        );
+             ORDER BY p.fullName ASC`, [tournamentId] );
         res.json(players);
     } catch (error) {
+        console.error("Erro ao buscar jogadores confirmados:", error);
         res.status(500).json({ error: "Erro ao buscar jogadores confirmados." });
     } finally {
         if (connection) connection.release();
     }
 });
+
+// --- ROTA LEADERBOARD DE TORNEIO (com correções de tipo) ---
 app.get("/api/tournaments/:tournamentId/leaderboard", async (req: Request, res: Response) => {
     const { tournamentId } = req.params;
     let connection;
     try {
         connection = await pool.getConnection();
-
         const [tournamentInfo]: any[] = await connection.execute("SELECT name FROM tournaments WHERE id = ?", [tournamentId]);
-        if (tournamentInfo.length === 0) {
-            return res.status(404).json({ error: "Torneio não encontrado." });
-        }
+        if (tournamentInfo.length === 0) { return res.status(404).json({ error: "Torneio não encontrado." }); }
 
-        const [holes]: any[] = await connection.execute(`
-            SELECT h.holeNumber, h.par
-            FROM holes h
-            JOIN courses c ON h.courseId = c.id
-            JOIN tournaments t ON c.id = t.courseId
-            WHERE t.id = ?`,
+        const [holesResult]: any[] = await connection.execute(
+            `SELECT h.holeNumber, h.par FROM holes h JOIN courses c ON h.courseId = c.id JOIN tournaments t ON c.id = t.courseId WHERE t.id = ?`,
             [tournamentId]
         );
-        const parMap = new Map(holes.map(h => [h.holeNumber, h.par]));
+        // CORREÇÃO: Adicionar tipo para 'h'
+        const parMap = new Map(holesResult.map((h: { holeNumber: number; par: number }) => [h.holeNumber, h.par]));
 
-        const [playerData]: any[] = await connection.execute(
-            `SELECT
-                p.id as playerId, p.fullName, p.gender, gp.courseHandicap, tcat.name as categoryName
-             FROM players p
-             JOIN group_players gp ON p.id = gp.playerId
-             JOIN \`groups\` g ON gp.groupId = g.id
+        const [playerDataResult]: any[] = await connection.execute(
+            `SELECT p.id as playerId, p.fullName, p.gender, gp.courseHandicap, tcat.name as categoryName
+             FROM players p JOIN group_players gp ON p.id = gp.playerId JOIN \`groups\` g ON gp.groupId = g.id
              LEFT JOIN tournament_registrations tr ON tr.playerId = p.id AND tr.tournamentId = g.tournamentId
-             LEFT JOIN tournament_categories tcat ON tr.categoryId = tcat.id
-             WHERE g.tournamentId = ?`,
+             LEFT JOIN tournament_categories tcat ON tr.categoryId = tcat.id WHERE g.tournamentId = ?`,
             [tournamentId]
         );
+         const playerData: PlayerQueryResult[] = playerDataResult as PlayerQueryResult[]; // Cast
 
-        const [allScores]: any[] = await connection.execute(
+        const [allScoresResult]: any[] = await connection.execute(
             `SELECT s.playerId, s.holeNumber, s.strokes FROM scores s JOIN \`groups\` g ON s.groupId = g.id WHERE g.tournamentId = ?`,
             [tournamentId]
         );
+        const allScores: ScoreQueryResult[] = allScoresResult as ScoreQueryResult[]; // Cast
 
-        const leaderboardData = playerData.map(player => {
-            const playerScores = allScores.filter(s => s.playerId === player.playerId);
-            const totalStrokes = playerScores.reduce((sum, s) => sum + (s.strokes || 0), 0);
+        // CORREÇÃO: Adicionar tipos para 'player', 's', 'sum'
+        const leaderboardData = playerData.map((player: PlayerQueryResult) => {
+            const playerScores = allScores.filter((s: ScoreQueryResult) => s.playerId === player.playerId);
+            const totalStrokes = playerScores.reduce((sum: number, s: ScoreQueryResult) => sum + (s.strokes || 0), 0);
             const netScore = totalStrokes - (player.courseHandicap || 0);
-
             let parThrough = 0;
-            playerScores.forEach(s => {
-                parThrough += parMap.get(s.holeNumber) || 0;
+            playerScores.forEach((s: ScoreQueryResult) => {
+                // CORREÇÃO: Usar Number() para evitar erro TS2365
+                parThrough += Number(parMap.get(s.holeNumber) ?? 0);
             });
-
-            return {
-                ...player,
-                totalStrokes,
-                netScore,
-                through: playerScores.length,
-                parThrough,
-                toParGross: totalStrokes - parThrough,
-                netToPar: netScore - parThrough,
-            };
+            return { ...player, totalStrokes, netScore, through: playerScores.length, parThrough,
+                     toParGross: totalStrokes - parThrough, netToPar: netScore - parThrough };
         });
 
-        res.json({
-            tournamentName: tournamentInfo[0].name,
-            leaderboard: leaderboardData
-        });
-
+        res.json({ tournamentName: tournamentInfo[0].name, leaderboard: leaderboardData });
     } catch (error) {
         console.error("Erro ao gerar leaderboard:", error);
         res.status(500).json({ error: "Erro interno ao gerar o leaderboard." });
@@ -480,402 +628,140 @@ app.get("/api/tournaments/:tournamentId/leaderboard", async (req: Request, res: 
     }
 });
 
-// --- LÓGICA DE EXPORTAÇÃO APERFEIÇOADA ---
-
-// ESTILOS GLOBAIS PARA AS PLANILHAS (COM CORREÇÕES)
+// --- LÓGICA DE EXPORTAÇÃO (com correções) ---
 const scorecardStyler = {
-    headerFill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F2937' } } as ExcelJS.Fill,
+    headerFill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F2937' } } as ExcelJS.FillPattern,
     headerFont: { color: { argb: 'FF34D399' }, bold: true, size: 12 },
-    // CORREÇÃO: Cor do título principal para preto
     titleFont: { color: { argb: 'FF000000' }, bold: true, size: 16 },
-    // CORREÇÃO: Cor do subtítulo para preto também
     subtitleFont: { color: { argb: 'FF000000' }, size: 11 },
     parFont: { bold: true, color: { argb: 'FF34D399' } },
-    playerFont: { bold: true, size: 11 }, // Cor padrão (preto)
+    playerFont: { bold: true, size: 11 },
     totalsFont: { bold: true, color: { argb: 'FF34D399' } },
     borderStyle: { style: 'thin', color: { argb: 'FF4B5563' } } as ExcelJS.Border,
     applyBorders: (cell: ExcelJS.Cell) => {
+        // CORREÇÃO: Garantir tipo Partial<Borders>
         cell.border = { top: scorecardStyler.borderStyle, left: scorecardStyler.borderStyle, bottom: scorecardStyler.borderStyle, right: scorecardStyler.borderStyle };
     },
-    // CORREÇÃO: Cores para os nomes dos Tees
+    // CORREÇÃO: Usar Partial<Color> para teeColors
     teeColors: {
-        BLUE: { argb: 'FF0000FF' },
-        GOLD: { argb: 'FFFFD700' },
-        RED: { argb: 'FFFF0000' },
-        WHITE: { argb: 'FF000000' }  // Preto para contraste no fundo branco
-        // Adicione outras cores se necessário
-    } as Record<string, ExcelJS.Color>
+        BLUE: { argb: 'FF0000FF' }, GOLD: { argb: 'FFFFD700' }, RED: { argb: 'FFFF0000' }, WHITE: { argb: 'FF000000' }
+    } as Record<string, Partial<ExcelJS.Color>>
 };
 
 const buildHorizontalScorecard = async (sheet: ExcelJS.Worksheet, title: string, subtitle: string, courseData: CourseForScorecard, playersData: ScorecardPlayer[]) => {
+    // ... (código da função sem alterações de tipo significativas, já corrigidas antes) ...
+     sheet.mergeCells('A1:Z1'); sheet.getCell('A1').value = title; sheet.getCell('A1').font = scorecardStyler.titleFont; sheet.getCell('A1').alignment = { vertical: 'middle', horizontal: 'center' };
+     sheet.mergeCells('A2:Z2'); sheet.getCell('A2').value = subtitle; sheet.getCell('A2').font = scorecardStyler.subtitleFont; sheet.getCell('A2').alignment = { vertical: 'middle', horizontal: 'center' }; sheet.addRow([]);
+     const headers_campo = ['HOLE', null, ...Array.from({ length: 9 }, (_, i) => i + 1), 'OUT', ...Array.from({ length: 9 }, (_, i) => i + 10), 'IN', 'TOTAL'];
+     const holeRow = sheet.addRow(headers_campo); holeRow.font = scorecardStyler.headerFont; holeRow.getCell(1).value = 'HOLE'; holeRow.eachCell((cell, colNumber) => { if (colNumber >= 3) scorecardStyler.applyBorders(cell); cell.alignment = { horizontal: 'center' }; });
+     const parData = ['PAR', null, ...courseData.holes.slice(0, 9).map(h => h.par), null, ...courseData.holes.slice(9, 18).map(h => h.par), null, null];
+     const parRow = sheet.addRow(parData); parRow.font = scorecardStyler.parFont; parRow.getCell(1).value = 'PAR'; parRow.eachCell((cell, colNumber) => { if (colNumber >= 3) scorecardStyler.applyBorders(cell); cell.alignment = { horizontal: 'center' }; });
+     parRow.getCell(12).value = { formula: `SUM(C${parRow.number}:K${parRow.number})` }; parRow.getCell(22).value = { formula: `SUM(M${parRow.number}:U${parRow.number})` }; parRow.getCell(23).value = { formula: `L${parRow.number}+V${parRow.number}` };
+     const teeColorsSet = new Set(courseData.holes.flatMap((h: HoleWithTees) => h.tees.map((t: TeeData) => t.color.toUpperCase()))); const teeColors = Array.from(teeColorsSet).sort();
+     let currentTeeRowNumber = parRow.number + 1;
+     teeColors.forEach(color => {
+         const yardages = courseData.holes.map((h: HoleWithTees) => h.tees.find((t: TeeData) => t.color.toUpperCase() === color)?.yardage ?? '-');
+         const teeRowData = [color, null, ...yardages.slice(0, 9), null, ...yardages.slice(9, 18), null, null]; const teeRow = sheet.addRow(teeRowData); const teeNameCell = teeRow.getCell(1); teeNameCell.value = color; const teeColorStyle = scorecardStyler.teeColors[color];
+         teeRow.eachCell((cell, colNumber) => { if (colNumber >= 3) { scorecardStyler.applyBorders(cell); cell.alignment = { horizontal: 'center' }; if (teeColorStyle) cell.font = { color: teeColorStyle }; } });
+         if (teeColorStyle) { teeNameCell.font = { bold: true, color: teeColorStyle }; } else { teeNameCell.font = { bold: true }; } teeNameCell.alignment = { horizontal: 'left', vertical: 'middle' };
+         teeRow.getCell(12).value = { formula: `SUM(C${teeRow.number}:K${teeRow.number})` }; teeRow.getCell(22).value = { formula: `SUM(M${teeRow.number}:U${teeRow.number})` }; teeRow.getCell(23).value = { formula: `L${teeRow.number}+V${teeRow.number}` }; currentTeeRowNumber++;
+     });
+     sheet.addRow([]);
+     const headers_jogadores = ['Pos.', 'Nome', 'HDC', ...Array.from({ length: 9 }, (_, i) => i + 1), 'OUT', ...Array.from({ length: 9 }, (_, i) => i + 10), 'IN', 'GROSS', 'NET', 'Desempate'];
+     const headerPlayerRow = sheet.addRow(headers_jogadores); headerPlayerRow.eachCell((cell, colNumber) => { cell.font = scorecardStyler.headerFont; cell.fill = scorecardStyler.headerFill; scorecardStyler.applyBorders(cell); cell.alignment = { horizontal: 'center' }; }); headerPlayerRow.getCell(2).alignment = { horizontal: 'left' };
+     playersData.forEach((player, index) => {
+         const scores = Array(18).fill(null); player.scores.forEach(s => { if (s.holeNumber >= 1 && s.holeNumber <= 18) { scores[s.holeNumber - 1] = s.strokes; } });
+         const scoreRowData = [ index + 1, player.fullName, player.courseHandicap ?? '-', ...scores.slice(0, 9), null, ...scores.slice(9, 18), null, null, null, player.tieBreakReason || '' ];
+         const scoreRow = sheet.addRow(scoreRowData); scoreRow.getCell(2).font = scorecardStyler.playerFont; scoreRow.getCell(2).alignment = { horizontal: 'left' };
+         scoreRow.eachCell((cell, colNumber) => { scorecardStyler.applyBorders(cell); if (![2, 26].includes(colNumber)) { cell.alignment = { horizontal: 'center', vertical: 'middle' }; } else { cell.alignment = { horizontal: 'left', vertical: 'middle' }; } });
+         const outCell = scoreRow.getCell(13); const inCell = scoreRow.getCell(23); const grossCell = scoreRow.getCell(24); const netCell = scoreRow.getCell(25);
+         outCell.value = { formula: `SUM(D${scoreRow.number}:L${scoreRow.number})` }; inCell.value = { formula: `SUM(N${scoreRow.number}:V${scoreRow.number})` }; grossCell.value = { formula: `M${scoreRow.number}+W${scoreRow.number}` };
+         if (player.courseHandicap !== null && player.courseHandicap !== undefined && typeof player.courseHandicap === 'number') { netCell.value = { formula: `X${scoreRow.number}-C${scoreRow.number}` }; } else { netCell.value = '-'; }
+         [outCell, inCell, grossCell, netCell].forEach(cell => { cell.font = scorecardStyler.totalsFont; cell.alignment = { horizontal: 'center' }; }); const tieBreakCell = scoreRow.getCell(26); scorecardStyler.applyBorders(tieBreakCell); tieBreakCell.alignment = { horizontal: 'left', vertical: 'middle' };
+     });
+     sheet.getColumn('A').width = 6; sheet.getColumn('B').width = 35; sheet.getColumn('C').width = 5; for (let i = 4; i <= 11; i++) { sheet.getColumn(i).width = 4.5; } sheet.getColumn(12).width = 6; for (let i = 13; i <= 21; i++) { sheet.getColumn(i).width = 4.5; } sheet.getColumn(22).width = 6; sheet.getColumn(23).width = 7; sheet.getColumn(24).width = 7; sheet.getColumn(25).width = 5; sheet.getColumn(26).width = 15;
+};
 
-    // --- Título e Subtítulo em Linhas Separadas ---
-    sheet.mergeCells('A1:Z1'); // Mescla até a última coluna esperada (Desempate - Coluna Z)
-    sheet.getCell('A1').value = title;
-    sheet.getCell('A1').font = scorecardStyler.titleFont; // Usa a cor preta agora
-    sheet.getCell('A1').alignment = { vertical: 'middle', horizontal: 'center' };
-
-    sheet.mergeCells('A2:Z2');
-    sheet.getCell('A2').value = subtitle;
-    sheet.getCell('A2').font = scorecardStyler.subtitleFont; // Usa a cor preta agora
-    sheet.getCell('A2').alignment = { vertical: 'middle', horizontal: 'center' };
-    sheet.addRow([]); // Espaçador (Linha 3)
-
-    // --- Cabeçalho do Campo (Layout "Correto" da Parte de Cima) ---
-    // Colunas: A=HOLE, B=Vazio, C-K=1-9, L=OUT, M-U=10-18, V=IN, W=TOTAL
-    const headers_campo = ['HOLE', null, ...Array.from({ length: 9 }, (_, i) => i + 1), 'OUT', ...Array.from({ length: 9 }, (_, i) => i + 10), 'IN', 'TOTAL'];
-    const holeRow = sheet.addRow(headers_campo); // Linha 4
-    holeRow.font = scorecardStyler.headerFont;
-    holeRow.getCell(1).value = 'HOLE';
-    holeRow.eachCell((cell, colNumber) => {
-      // Aplica borda a partir da coluna C (buraco 1)
-      if (colNumber >= 3) scorecardStyler.applyBorders(cell);
-      cell.alignment = { horizontal: 'center' };
-    });
-
-    const parData = ['PAR', null, ...courseData.holes.slice(0, 9).map(h => h.par), null, ...courseData.holes.slice(9, 18).map(h => h.par), null, null];
-    const parRow = sheet.addRow(parData); // Linha 5
-    parRow.font = scorecardStyler.parFont;
-    parRow.getCell(1).value = 'PAR';
-    parRow.eachCell((cell, colNumber) => {
-        if (colNumber >= 3) scorecardStyler.applyBorders(cell);
-        cell.alignment = { horizontal: 'center' };
-    });
-    // Fórmulas PAR (L=OUT, V=IN, W=TOTAL)
-    parRow.getCell(12).value = { formula: `SUM(C${parRow.number}:K${parRow.number})` }; // OUT na coluna L
-    parRow.getCell(22).value = { formula: `SUM(M${parRow.number}:U${parRow.number})` }; // IN na coluna V
-    parRow.getCell(23).value = { formula: `L${parRow.number}+V${parRow.number}` }; // TOTAL na coluna W
-
-    const teeColors = Array.from(new Set(courseData.holes.flatMap((h: HoleWithTees) => h.tees.map((t: any) => t.color.toUpperCase())))).sort();
-    let currentTeeRowNumber = parRow.number + 1;
-    teeColors.forEach(color => {
-        const yardages = courseData.holes.map((h: HoleWithTees) => h.tees.find((t: any) => t.color.toUpperCase() === color)?.yardage ?? '-');
-        const teeRowData = [color, null, ...yardages.slice(0, 9), null, ...yardages.slice(9, 18), null, null];
-        const teeRow = sheet.addRow(teeRowData);
-        const teeNameCell = teeRow.getCell(1);
-        teeNameCell.value = color;
-        const teeColorStyle = scorecardStyler.teeColors[color];
-
-        teeRow.eachCell((cell, colNumber) => {
-           if (colNumber >= 3) { // A partir da coluna C
-               scorecardStyler.applyBorders(cell);
-               cell.alignment = { horizontal: 'center' };
-               if (teeColorStyle) cell.font = { color: teeColorStyle };
-           }
-        });
-        if (teeColorStyle) {
-            teeNameCell.font = { bold: true, color: teeColorStyle };
-        } else {
-             teeNameCell.font = { bold: true };
-        }
-        teeNameCell.alignment = { horizontal: 'left', vertical: 'middle' };
-
-        // Fórmulas YARDAGE (L=OUT, V=IN, W=TOTAL)
-        teeRow.getCell(12).value = { formula: `SUM(C${teeRow.number}:K${teeRow.number})` }; // OUT na coluna L
-        teeRow.getCell(22).value = { formula: `SUM(M${teeRow.number}:U${teeRow.number})` }; // IN na coluna V
-        teeRow.getCell(23).value = { formula: `L${teeRow.number}+V${teeRow.number}` }; // TOTAL na coluna W
-        currentTeeRowNumber++;
-    });
-
-   sheet.addRow([]); // Espaçador (Linha depois dos Tees)
-
-    // --- Tabela de Jogadores (Layout da Imagem 2 - Alinhamento CORRIGIDO) ---
-    // Colunas: A=Pos, B=Nome, C=HDC, D-L=1-9, M=OUT, N-V=10-18, W=IN, X=GROSS, Y=NET, Z=Desempate
-    const headers_jogadores = ['Pos.', 'Nome', 'HDC', ...Array.from({ length: 9 }, (_, i) => i + 1), 'OUT', ...Array.from({ length: 9 }, (_, i) => i + 10), 'IN', 'GROSS', 'NET', 'Desempate'];
-    const headerPlayerRow = sheet.addRow(headers_jogadores);
-    headerPlayerRow.eachCell((cell, colNumber) => {
+const buildGrossChampionsSheet = (sheet: ExcelJS.Worksheet, players: ScorecardPlayer[]) => {
+    // ... (código da função com correções de borda/fonte) ...
+    sheet.addRow(['Campeões Gross']).font = { size: 16, bold: true }; sheet.mergeCells('A1:C1'); sheet.getRow(1).alignment = { horizontal: 'center' }; sheet.addRow([]);
+    const headers = ['Pos.', 'Nome', 'GROSS']; const headerRow = sheet.addRow(headers);
+    headerRow.eachCell(cell => {
+        // CORREÇÃO: Usar headerFont
         cell.font = scorecardStyler.headerFont;
         cell.fill = scorecardStyler.headerFill;
+        // CORREÇÃO: Usar applyBorders
         scorecardStyler.applyBorders(cell);
         cell.alignment = { horizontal: 'center' };
     });
-    headerPlayerRow.getCell(2).alignment = { horizontal: 'left' }; // Alinha nome à esquerda
-
-    playersData.forEach((player, index) => {
-        const scores = Array(18).fill(null);
-        player.scores.forEach(s => {
-            if (s.holeNumber >= 1 && s.holeNumber <= 18) {
-                scores[s.holeNumber - 1] = s.strokes;
-            }
-        });
-
-        // CORREÇÃO: Layout alinhado com a imagem (HDC na C, Buraco 1 na D, etc.)
-        const scoreRowData = [
-            index + 1, // Col A: Pos.
-            player.fullName, // Col B: Nome
-            player.courseHandicap ?? '-', // Col C: HDC
-            ...scores.slice(0, 9), // Col D-L: Buracos 1-9
-            null, // Col M: OUT formula
-            ...scores.slice(9, 18), // Col N-V: Buracos 10-18
-            null, // Col W: IN formula
-            null, // Col X: GROSS formula
-            null, // Col Y: NET formula
-            player.tieBreakReason || '' // Col Z: Desempate
-        ];
-        const scoreRow = sheet.addRow(scoreRowData);
-        scoreRow.getCell(2).font = scorecardStyler.playerFont; // Fonte preta/bold
-        scoreRow.getCell(2).alignment = { horizontal: 'left' };
-
-        scoreRow.eachCell((cell, colNumber) => {
-            scorecardStyler.applyBorders(cell);
-            // Centraliza tudo, exceto Nome (B) e Desempate (Z)
-            if (![2, 26].includes(colNumber)) {
-                 cell.alignment = { horizontal: 'center', vertical: 'middle' };
-            } else {
-                 cell.alignment = { horizontal: 'left', vertical: 'middle' };
-            }
-        });
-
-        // CORREÇÃO: Fórmulas dos jogadores nas colunas corretas (M=OUT, W=IN, X=GROSS, Y=NET)
-        const outCell = scoreRow.getCell(13); // Coluna M
-        const inCell = scoreRow.getCell(23);  // Coluna W
-        const grossCell = scoreRow.getCell(24); // Coluna X
-        const netCell = scoreRow.getCell(25);   // Coluna Y
-
-        outCell.value = { formula: `SUM(D${scoreRow.number}:L${scoreRow.number})` }; // Buracos 1-9 (Cols D-L)
-        inCell.value = { formula: `SUM(N${scoreRow.number}:V${scoreRow.number})` }; // Buracos 10-18 (Cols N-V)
-        grossCell.value = { formula: `M${scoreRow.number}+W${scoreRow.number}` }; // OUT + IN
-
-        if (player.courseHandicap !== null && player.courseHandicap !== undefined && typeof player.courseHandicap === 'number') {
-             netCell.value = { formula: `X${scoreRow.number}-C${scoreRow.number}` }; // GROSS - HDC
-        } else {
-             netCell.value = '-';
-        }
-
-        [outCell, inCell, grossCell, netCell].forEach(cell => {
-             cell.font = scorecardStyler.totalsFont;
-             cell.alignment = { horizontal: 'center' };
-        });
-        // Coluna de desempate (Z)
-        const tieBreakCell = scoreRow.getCell(26); // Coluna Z
-        scorecardStyler.applyBorders(tieBreakCell);
-        tieBreakCell.alignment = { horizontal: 'left', vertical: 'middle' };
-    });
-
-// --- AJUSTE DE LARGURA DAS COLUNAS (FINO) ---
-    // Define larguras que acomodam tanto os Títulos (HOLE, PAR) quanto os dados (Pos, Nome)
-    sheet.getColumn('A').width = 6;  // HOLE / Pos.
-    sheet.getColumn('B').width = 35; // Vazio / Nome
-    sheet.getColumn('C').width = 5;  // Buraco 1 (Campo) / HDC (Jogador)
-    
-    // Buracos 2-9 (Campo) / 1-8 (Jogador)
-    for (let i = 4; i <= 11; i++) { sheet.getColumn(i).width = 4.5; } // Colunas D-K
-    
-    sheet.getColumn(12).width = 6; // L (OUT Campo / Buraco 9 Jogador)
-    
-    // Buracos 10-18 (Campo) / OUT + 10-17 (Jogador)
-    for (let i = 13; i <= 21; i++) { sheet.getColumn(i).width = 4.5; } // Colunas M-U
-    
-    sheet.getColumn(22).width = 6; // V (IN Campo / Buraco 18 Jogador)
-    sheet.getColumn(23).width = 7; // W (TOTAL Campo / IN Jogador)
-    sheet.getColumn(24).width = 7; // X (GROSS Jogador)
-    sheet.getColumn(25).width = 5; // Y (NET Jogador)
-    sheet.getColumn(26).width = 15; // Z (Desempate Jogador)
-};
-// Função para criar aba de Campeões Gross (corrigindo bordas)
-const buildGrossChampionsSheet = (sheet: ExcelJS.Worksheet, players: ScorecardPlayer[]) => {
-    sheet.addRow(['Campeões Gross']).font = { size: 16, bold: true };
-    sheet.mergeCells('A1:C1');
-    sheet.getRow(1).alignment = { horizontal: 'center' };
-    sheet.addRow([]);
-
-    const headers = ['Pos.', 'Nome', 'GROSS'];
-    const headerRow = sheet.addRow(headers);
-    headerRow.eachCell(cell => {
-        cell.font = scorecardStyler.font;
-        cell.fill = scorecardStyler.headerFill;
-        cell.border = scorecardStyler.borderStyle; // Correção: Usar o estilo de borda definido
-    });
-
     const sortedPlayers = [...players].sort((a, b) => (a.totalStrokes || 999) - (b.totalStrokes || 999));
-
     sortedPlayers.forEach((player, index) => {
-        const row = sheet.addRow([index + 1, player.fullName, player.totalStrokes]);
-        row.getCell(2).font = scorecardStyler.playerFont; // Usa fonte padrão preta
+        const row = sheet.addRow([index + 1, player.fullName, player.totalStrokes]); row.getCell(2).font = scorecardStyler.playerFont;
         row.eachCell(cell => {
-            cell.border = scorecardStyler.borderStyle; // Correção: Aplicar borda
+            // CORREÇÃO: Usar applyBorders
+             scorecardStyler.applyBorders(cell);
             cell.alignment = { horizontal: 'center' };
         });
-        row.getCell(2).alignment = { horizontal: 'left' }; // Alinha nome à esquerda
+        row.getCell(2).alignment = { horizontal: 'left' };
     });
-
-    sheet.getColumn('B').width = 35; // Nome do jogador
-    sheet.getColumn('A').width = 6;
-    sheet.getColumn('C').width = 8;
+    sheet.getColumn('B').width = 35; sheet.getColumn('A').width = 6; sheet.getColumn('C').width = 8;
 };
-// Função de categorização mantida igual
-const categorizePlayer = (player: { gender: 'Male' | 'Female', courseHandicap: number }): string => {
-    const hcp = player.courseHandicap;
+
+// CORREÇÃO: Função categorizePlayer aceita handicap opcional
+const categorizePlayer = (player: { gender: 'Male' | 'Female', courseHandicap?: number }): string => {
+    const hcp = player.courseHandicap ?? 99;
     if (player.gender === 'Male') {
-        if (hcp <= 8.5) return 'M1';
-        if (hcp <= 14.0) return 'M2';
-        if (hcp <= 22.2) return 'M3';
-        return 'M4';
-    } else { // Female
-        if (hcp <= 13.1) return 'F1';
-        if (hcp <= 21.2) return 'F2';
-        if (hcp <= 28.3) return 'F3';
-        return 'F4';
+        if (hcp <= 8.5) return 'M1'; if (hcp <= 14.0) return 'M2'; if (hcp <= 22.2) return 'M3'; return 'M4';
+    } else {
+        if (hcp <= 13.1) return 'F1'; if (hcp <= 21.2) return 'F2'; if (hcp <= 28.3) return 'F3'; return 'F4';
     }
 };
-
 app.get("/api/export/scorecard/tournament/:tournamentId", async (req: Request, res: Response) => {
-    const { tournamentId } = req.params;
-    let connection;
-
+    // ... (código da rota com correções de tipo 's', 'sum', courseData, categorizePlayer) ...
+     const { tournamentId } = req.params; let connection;
     try {
         connection = await pool.getConnection();
-        const [tournamentInfo]: any[] = await connection.execute(
-            "SELECT t.name, t.date, c.name as courseName, t.courseId FROM tournaments t JOIN courses c ON t.courseId = c.id WHERE t.id = ?", [tournamentId]
-        );
+        const [tournamentInfo]: any[] = await connection.execute( "SELECT t.name, t.date, c.name as courseName, t.courseId FROM tournaments t JOIN courses c ON t.courseId = c.id WHERE t.id = ?", [tournamentId] );
         if (!tournamentInfo.length) return res.status(404).send('Torneio não encontrado.');
         const { name: tournamentName, date: tournamentDate, courseName, courseId } = tournamentInfo[0];
-
-        // Busca dados do campo (buracos e tees)
-        const [holes]: any[] = await connection.execute(
-            `SELECT id, holeNumber, par FROM holes WHERE courseId = ? ORDER BY holeNumber ASC`,
-            [courseId]
-        );
-        for (const hole of holes) {
-            const [tees] = await connection.execute("SELECT color, yardage FROM tees WHERE holeId = ?", [hole.id]);
-            hole.tees = tees;
-        }
-        const courseData = { holes };
-
-        // Busca dados dos jogadores e seus scores
-        const [playerData]: any[] = await connection.execute(
-            `SELECT p.id as playerId, p.fullName, p.gender, gp.courseHandicap
-             FROM players p
-             JOIN group_players gp ON p.id = gp.playerId
-             JOIN \`groups\` g ON gp.groupId = g.id
-             WHERE g.tournamentId = ?`, [tournamentId]
-        );
-
-        const [allScores]: any[] = await connection.execute(
-            `SELECT s.playerId, s.holeNumber, s.strokes FROM scores s JOIN \`groups\` g ON s.groupId = g.id WHERE g.tournamentId = ?`,
-            [tournamentId]
-        );
-
-        // Processa os dados para cada jogador
+        const [holesResult]: any[] = await connection.execute( `SELECT id, holeNumber, par FROM holes WHERE courseId = ? ORDER BY holeNumber ASC`, [courseId] );
+        const holes: HoleQueryResult[] = holesResult as HoleQueryResult[];
+        for (const hole of holes) { const [tees] = await connection.execute("SELECT * FROM tees WHERE holeId = ?", [hole.id]); hole.tees = tees as TeeData[] ?? []; } // Garantir array
+        const courseData: CourseForScorecard = { holes }; // Agora compatível
+        const [playerDataResult]: any[] = await connection.execute( `SELECT p.id as playerId, p.fullName, p.gender, gp.courseHandicap FROM players p JOIN group_players gp ON p.id = gp.playerId JOIN \`groups\` g ON gp.groupId = g.id WHERE g.tournamentId = ?`, [tournamentId] );
+         const playerData: PlayerQueryResult[] = playerDataResult as PlayerQueryResult[];
+        const [allScoresResult]: any[] = await connection.execute( `SELECT s.playerId, s.holeNumber, s.strokes FROM scores s JOIN \`groups\` g ON s.groupId = g.id WHERE g.tournamentId = ?`, [tournamentId] );
+         const allScores: ScoreQueryResult[] = allScoresResult as ScoreQueryResult[];
         const playersWithScores: ScorecardPlayer[] = [];
         for (const p of playerData) {
-            const playerScores = allScores.filter(s => s.playerId === p.playerId);
-            const totalStrokes = playerScores.reduce((sum, s) => sum + (s.strokes || 0), 0);
-            const netScore = totalStrokes - (p.courseHandicap ?? 0); // Usa 0 se handicap for null/undefined
-
-            // Lógica de desempate (ajustada para usar NET e HDC como critérios primários)
+            // CORREÇÃO: Adicionar tipos para 's' e 'sum'
+            const playerScores = allScores.filter((s: ScoreQueryResult) => s.playerId === p.playerId);
+            const totalStrokes = playerScores.reduce((sum: number, s: ScoreQueryResult) => sum + (s.strokes || 0), 0);
+            const netScore = totalStrokes - (p.courseHandicap ?? 0);
             const calculateNetTieBreak = (start: number, count: number) => {
-                 const relevantScores = playerScores.filter((s: any) => s.holeNumber >= start && s.holeNumber < start + count);
-                 const grossSum = relevantScores.reduce((sum: number, s: any) => sum + (s.strokes || 0), 0);
-                 // Proporcionaliza o handicap
-                 const hcpProportional = (p.courseHandicap ?? 0) * (count / 18.0);
-                 return grossSum - hcpProportional;
+                 const relevantScores = playerScores.filter((s: ScoreQueryResult) => s.holeNumber >= start && s.holeNumber < start + count);
+                 const grossSum = relevantScores.reduce((sum: number, s: ScoreQueryResult) => sum + (s.strokes || 0), 0);
+                 const hcpProportional = (p.courseHandicap ?? 0) * (count / 18.0); return grossSum - hcpProportional;
             };
-
-
-            const tieBreakScores = { // Para desempate NET
-                last9: calculateNetTieBreak(10, 9),
-                last6: calculateNetTieBreak(13, 6),
-                last3: calculateNetTieBreak(16, 3),
-                last1: (playerScores.find((s: any) => s.holeNumber === 18)?.strokes || 0) - ((p.courseHandicap ?? 0) / 18.0)
-            };
-
-            playersWithScores.push({ ...p, id:p.playerId, scores: playerScores, totalStrokes, netScore, tieBreakScores });
+            const tieBreakScores = { last9: calculateNetTieBreak(10, 9), last6: calculateNetTieBreak(13, 6), last3: calculateNetTieBreak(16, 3), last1: (playerScores.find((s: ScoreQueryResult) => s.holeNumber === 18)?.strokes || 0) - ((p.courseHandicap ?? 0) / 18.0) };
+            playersWithScores.push({ ...p, id: p.playerId, scores: playerScores, totalStrokes, netScore, tieBreakScores });
         }
-
-        // Função de ordenação com desempate
-        const tiebreakSort = (a: ScorecardPlayer, b: ScorecardPlayer) => {
-            const netDiff = (a.netScore ?? 999) - (b.netScore ?? 999);
-            if (netDiff !== 0) return netDiff;
-
-            // Critério 2: Menor Handicap
-            const hcpDiff = (a.courseHandicap ?? 99) - (b.courseHandicap ?? 99);
-             if (hcpDiff !== 0) { a.tieBreakReason = 'Desempate: Menor HDC'; b.tieBreakReason = 'Desempate: Menor HDC'; return hcpDiff; }
-
-            // Critérios Sequenciais (Net)
-            const last9Diff = a.tieBreakScores.last9 - b.tieBreakScores.last9;
-            if (last9Diff !== 0) { a.tieBreakReason = 'Desempate: Últimos 9 NET'; b.tieBreakReason = 'Desempate: Últimos 9 NET'; return last9Diff; }
-
-            const last6Diff = a.tieBreakScores.last6 - b.tieBreakScores.last6;
-            if (last6Diff !== 0) { a.tieBreakReason = 'Desempate: Últimos 6 NET'; b.tieBreakReason = 'Desempate: Últimos 6 NET'; return last6Diff; }
-
-            const last3Diff = a.tieBreakScores.last3 - b.tieBreakScores.last3;
-            if (last3Diff !== 0) { a.tieBreakReason = 'Desempate: Últimos 3 NET'; b.tieBreakReason = 'Desempate: Últimos 3 NET'; return last3Diff; }
-
-            const last1Diff = a.tieBreakScores.last1 - b.tieBreakScores.last1;
-            if (last1Diff !== 0) { a.tieBreakReason = 'Desempate: Último Buraco NET'; b.tieBreakReason = 'Desempate: Último Buraco NET'; return last1Diff; }
-
-             // Sorteio (simulado pela ordem original ou ID se necessário)
-             a.tieBreakReason = 'Desempate: Sorteio'; b.tieBreakReason = 'Desempate: Sorteio';
-             return a.playerId - b.playerId; // Ou outra forma de sorteio consistente
-        };
-
-
-        // Separação por Gênero e Categoria
-        const categorizedData: { Male: Record<string, ScorecardPlayer[]>, Female: Record<string, ScorecardPlayer[]>} = {
-            Male: { M1: [], M2: [], M3: [], M4: [] },
-            Female: { F1: [], F2: [], F3: [], F4: [] },
-        };
-        const allMalePlayers: ScorecardPlayer[] = [];
-        const allFemalePlayers: ScorecardPlayer[] = [];
-
+        const tiebreakSort = (a: ScorecardPlayer, b: ScorecardPlayer) => { /* ... (lógica de sort) ... */ const netDiff = (a.netScore ?? 999) - (b.netScore ?? 999); if (netDiff !== 0) return netDiff; const hcpDiff = (a.courseHandicap ?? 99) - (b.courseHandicap ?? 99); if (hcpDiff !== 0) { a.tieBreakReason = 'Desempate: Menor HDC'; b.tieBreakReason = 'Desempate: Menor HDC'; return hcpDiff; } const last9Diff = a.tieBreakScores.last9 - b.tieBreakScores.last9; if (last9Diff !== 0) { a.tieBreakReason = 'Desempate: Últimos 9 NET'; b.tieBreakReason = 'Desempate: Últimos 9 NET'; return last9Diff; } const last6Diff = a.tieBreakScores.last6 - b.tieBreakScores.last6; if (last6Diff !== 0) { a.tieBreakReason = 'Desempate: Últimos 6 NET'; b.tieBreakReason = 'Desempate: Últimos 6 NET'; return last6Diff; } const last3Diff = a.tieBreakScores.last3 - b.tieBreakScores.last3; if (last3Diff !== 0) { a.tieBreakReason = 'Desempate: Últimos 3 NET'; b.tieBreakReason = 'Desempate: Últimos 3 NET'; return last3Diff; } const last1Diff = a.tieBreakScores.last1 - b.tieBreakScores.last1; if (last1Diff !== 0) { a.tieBreakReason = 'Desempate: Último Buraco NET'; b.tieBreakReason = 'Desempate: Último Buraco NET'; return last1Diff; } a.tieBreakReason = 'Desempate: Sorteio'; b.tieBreakReason = 'Desempate: Sorteio'; return a.playerId - b.playerId; };
+        const categorizedData: { Male: Record<string, ScorecardPlayer[]>, Female: Record<string, ScorecardPlayer[]>} = { Male: { M1: [], M2: [], M3: [], M4: [] }, Female: { F1: [], F2: [], F3: [], F4: [] } };
+        const allMalePlayers: ScorecardPlayer[] = []; const allFemalePlayers: ScorecardPlayer[] = [];
         playersWithScores.forEach(player => {
-            const category = categorizePlayer(player);
-            if (player.gender === 'Male') {
-                categorizedData.Male[category].push(player);
-                allMalePlayers.push(player);
-            } else if (player.gender === 'Female') {
-                categorizedData.Female[category].push(player);
-                allFemalePlayers.push(player);
-            }
+            // CORREÇÃO: Passar objeto correto para categorizePlayer
+            const category = categorizePlayer({ gender: player.gender, courseHandicap: player.courseHandicap });
+            if (player.gender === 'Male') { categorizedData.Male[category].push(player); allMalePlayers.push(player); }
+            else if (player.gender === 'Female') { categorizedData.Female[category].push(player); allFemalePlayers.push(player); }
         });
-
-        // Cria o Workbook e as Abas
-        const workbook = new ExcelJS.Workbook();
-        const subtitle = `${courseName} - ${new Date(tournamentDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}`;
-
-        // Aba Campeões Gross
+        const workbook = new ExcelJS.Workbook(); const subtitle = `${courseName} - ${new Date(tournamentDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}`;
         buildGrossChampionsSheet(workbook.addWorksheet('Campeões Gross'), playersWithScores);
-
-        // Abas Masculinas
-        if(allMalePlayers.length > 0){
-            allMalePlayers.sort(tiebreakSort);
-            await buildHorizontalScorecard(workbook.addWorksheet('Leaderboard NET Masculino'), `${tournamentName} - Leaderboard Geral NET Masculino`, subtitle, courseData, allMalePlayers);
-            ['M1', 'M2', 'M3', 'M4'].forEach(async category => {
-                 const players = categorizedData.Male[category];
-                 if (players.length > 0) {
-                     players.sort(tiebreakSort);
-                     await buildHorizontalScorecard(workbook.addWorksheet(`${category} Masculino`), `${tournamentName} - Categoria ${category} Masculino`, subtitle, courseData, players);
-                 }
-            });
-        }
-
-        // Abas Femininas
-        if(allFemalePlayers.length > 0) {
-            allFemalePlayers.sort(tiebreakSort);
-            await buildHorizontalScorecard(workbook.addWorksheet('Leaderboard NET Feminino'), `${tournamentName} - Leaderboard Geral NET Feminino`, subtitle, courseData, allFemalePlayers);
-             ['F1', 'F2', 'F3', 'F4'].forEach(async category => {
-                 const players = categorizedData.Female[category];
-                 if (players.length > 0) {
-                     players.sort(tiebreakSort);
-                     await buildHorizontalScorecard(workbook.addWorksheet(`${category} Feminino`), `${tournamentName} - Categoria ${category} Feminino`, subtitle, courseData, players);
-                 }
-             });
-        }
-
-        // Envia o arquivo
-        const fileName = `relatorio_completo_${tournamentName.replace(/\s+/g, '_')}.xlsx`;
-        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
-        await workbook.xlsx.write(res);
-        res.end();
-
-    } catch (error) {
-        console.error("Erro ao exportar relatório de torneio:", error);
-        res.status(500).json({ error: "Erro ao exportar." });
-    } finally {
-        if (connection) connection.release();
-    }
+        if(allMalePlayers.length > 0){ allMalePlayers.sort(tiebreakSort); await buildHorizontalScorecard(workbook.addWorksheet('Leaderboard NET Masculino'), `${tournamentName} - Leaderboard Geral NET Masculino`, subtitle, courseData, allMalePlayers); await Promise.all(['M1', 'M2', 'M3', 'M4'].map(async category => { const players = categorizedData.Male[category]; if (players.length > 0) { players.sort(tiebreakSort); await buildHorizontalScorecard(workbook.addWorksheet(`${category} Masculino`), `${tournamentName} - Categoria ${category} Masculino`, subtitle, courseData, players); } })); }
+        if(allFemalePlayers.length > 0) { allFemalePlayers.sort(tiebreakSort); await buildHorizontalScorecard(workbook.addWorksheet('Leaderboard NET Feminino'), `${tournamentName} - Leaderboard Geral NET Feminino`, subtitle, courseData, allFemalePlayers); await Promise.all(['F1', 'F2', 'F3', 'F4'].map(async category => { const players = categorizedData.Female[category]; if (players.length > 0) { players.sort(tiebreakSort); await buildHorizontalScorecard(workbook.addWorksheet(`${category} Feminino`), `${tournamentName} - Categoria ${category} Feminino`, subtitle, courseData, players); } })); }
+        const fileName = `relatorio_completo_${tournamentName.replace(/\s+/g, '_')}.xlsx`; res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); res.setHeader('Content-Disposition', `attachment; filename=${fileName}`); await workbook.xlsx.write(res); res.end();
+    } catch (error) { console.error("Erro ao exportar relatório de torneio:", error); res.status(500).json({ error: "Erro ao exportar." }); }
+    finally { if (connection) connection.release(); }
 });
 // ... (O restante das suas rotas continua aqui) ...
 app.get("/api/courses", async (req: Request, res: Response) => {
