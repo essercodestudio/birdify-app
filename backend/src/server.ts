@@ -1,6 +1,6 @@
 import nodemailer from "nodemailer";
 import crypto from "crypto";
-import express, { Request, Response } from "express";
+import express, { Request, Response, NextFunction } from "express"; // Importar NextFunction
 import cors from "cors";
 import dotenv from "dotenv";
 import mysql from "mysql2/promise";
@@ -9,6 +9,9 @@ import path from "path";
 import fs from "fs";
 import ExcelJS from "exceljs";
 import bcrypt from "bcrypt";
+
+// DEFINIR O FUSO HORÁRIO GLOBAL PARA O SERVIDOR
+process.env.TZ = 'America/Sao_Paulo'; 
 
 dotenv.config();
 
@@ -37,22 +40,24 @@ const dbConfig = {
     database: process.env.DB_DATABASE,
     connectionLimit: 10,
     waitForConnections: true,
-    queueLimit: 0
+    queueLimit: 0,
+    timezone: "-03:00" // Garantir que o MySQL usa o fuso de Brasília
 };
 const pool = mysql.createPool(dbConfig);
 
-// --- INTERFACES (Incluindo ScoreQueryResult) ---
-interface ScoreQueryResult { // <--- Definição necessária
+// --- INTERFACES ---
+interface ScoreQueryResult { 
     playerId: number;
     holeNumber: number;
     strokes: number | null;
 }
 interface PlayerQueryResult {
     id: number;
-    playerId: number;
+    playerId: number; 
     fullName: string;
     gender: 'Male' | 'Female';
     courseHandicap?: number;
+    categoryName?: string; 
 }
 interface TeeData {
     id: number;
@@ -65,11 +70,11 @@ interface HoleQueryResult {
     holeNumber: number;
     par: number;
     aerialImageUrl?: string | null;
-    tees: TeeData[]; // Obrigatório
+    tees: TeeData[]; 
 }
 interface ScorecardPlayer {
-    id: number;
-    playerId: number;
+    id: number; 
+    playerId: number; 
     fullName: string;
     gender: 'Male' | 'Female';
     courseHandicap?: number;
@@ -82,109 +87,128 @@ interface ScorecardPlayer {
     toParGross?: number;
     netToPar?: number;
     through?: number;
+    categoryName?: string;
 }
 interface HoleWithTees {
     id: number;
     holeNumber: number;
     par: number;
-    tees: TeeData[]; // Tipo consistente
+    tees: TeeData[]; 
 }
 interface CourseForScorecard {
     holes: HoleWithTees[];
+    courseName?: string; 
+    date?: string; 
 }
-// Interface para jogador na nova rota de leaderboard de treino
 interface TrainingLeaderboardPlayer {
     playerId: number;
     fullName: string;
-    gender: 'Male' | 'Female'; // Adicionado se precisar
+    gender: 'Male' | 'Female';
     totalStrokes: number;
     through: number;
     toParGross: number;
 }
 
-app.post("/api/trainings", async (req: Request, res: Response) => {
-    const { courseId, creatorId, date, startHole, type = 'single_group' } = req.body; // Aceita 'type'
+// ===================================================================
+// INÍCIO DO BLOCO DE TREINO (Corrigido e Melhorado)
+// ===================================================================
+
+app.post("/api/trainings", async (req: Request, res: Response, next: NextFunction) => {
+    const { courseId, creatorId, date, startHole, type = 'single_group' } = req.body;
     let connection;
     try {
+        // CORREÇÃO: Converter IDs para números
+        const numericCourseId = parseInt(courseId, 10);
+        const numericCreatorId = parseInt(creatorId, 10);
+        const numericStartHole = parseInt(startHole, 10);
+
+        if (isNaN(numericCourseId) || isNaN(numericCreatorId) || isNaN(numericStartHole)) {
+            return res.status(400).json({ error: "IDs inválidos ou em falta." });
+        }
+        
         connection = await pool.getConnection();
         await connection.beginTransaction();
 
-        const initialStatus = type === 'multi_group' ? 'awaiting_groups' : 'active'; // Status inicial
-        // !! GARANTA QUE A COLUNA 'type' EXISTE NA TABELA 'trainings' !!
+        const initialStatus = type === 'multi_group' ? 'awaiting_groups' : 'active';
+        
         const [trainingResult]: any = await connection.execute(
             "INSERT INTO trainings (courseId, creatorId, date, status, type) VALUES (?, ?, ?, ?, ?)",
-            [courseId, creatorId, date, initialStatus, type]
+            [numericCourseId, numericCreatorId, date, initialStatus, type]
         );
         const trainingId = trainingResult.insertId;
 
         const accessCode = Math.random().toString(36).substring(2, 8).toUpperCase();
         const [groupResult]: any = await connection.execute(
             "INSERT INTO training_groups (trainingId, startHole, accessCode) VALUES (?, ?, ?)",
-            [trainingId, startHole, accessCode]
+            [trainingId, numericStartHole, accessCode]
         );
         const trainingGroupId = groupResult.insertId;
 
         await connection.execute(
             "INSERT INTO training_participants (trainingGroupId, playerId, isResponsible, invitationStatus) VALUES (?, ?, ?, 'accepted')",
-            [trainingGroupId, creatorId, 1]
+            [trainingGroupId, numericCreatorId, 1]
         );
 
         await connection.commit();
-        const [courseInfo]: any[] = await connection.execute("SELECT name FROM courses WHERE id = ?", [courseId]);
+        const [courseInfo]: any[] = await connection.execute("SELECT name FROM courses WHERE id = ?", [numericCourseId]);
         res.status(201).json({
             id: trainingId, trainingGroupId, accessCode, date,
             courseName: courseInfo.length > 0 ? courseInfo[0].name : 'Campo Desconhecido',
-            creatorId, status: initialStatus, type
+            creatorId: numericCreatorId,
+            status: initialStatus, type
         });
-    } catch (error) {
+    } catch (error: any) {
          if (connection) await connection.rollback();
          console.error("Erro ao criar treino:", error);
-         res.status(500).json({ error: "Erro ao criar treino." });
+         const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+         res.status(500).json({ error: errorMessage });
     } finally {
          if (connection) connection.release();
     }
 });
-// NOVA ROTA para adicionar grupo a treino existente ('Jogo de Aposta')
-app.post("/api/trainings/:trainingId/groups", async (req: Request, res: Response) => {
-    const { trainingId } = req.params;
-    const { startHole, players, responsiblePlayerId } = req.body; // 'players' deve ser array [{id: number}, ...]
 
-    // Validações
-    if (!startHole || !Array.isArray(players) || players.length === 0 || !responsiblePlayerId) {
-        return res.status(400).json({ error: "Dados inválidos para criar novo grupo." });
-    }
-    if (!players.find(p => p.id === responsiblePlayerId)) {
-        return res.status(400).json({ error: "O jogador responsável deve estar na lista de jogadores." });
-    }
+app.post("/api/trainings/:trainingId/groups", async (req: Request, res: Response, next: NextFunction) => {
+    const { trainingId } = req.params;
+    const { startHole, players, responsiblePlayerId } = req.body; 
 
     let connection;
     try {
+        if (!startHole || !Array.isArray(players) || players.length === 0 || !responsiblePlayerId) {
+            return res.status(400).json({ error: "Dados inválidos para criar novo grupo." });
+        }
+        
+        // CORREÇÃO: Converter IDs para números
+        const numericTrainingId = parseInt(trainingId, 10);
+        const numericStartHole = parseInt(startHole, 10);
+        const numericResponsiblePlayerId = parseInt(responsiblePlayerId, 10);
+
+        if (!players.find(p => parseInt(p.id, 10) === numericResponsiblePlayerId)) {
+            return res.status(400).json({ error: "O jogador responsável deve estar na lista de jogadores." });
+        }
+
         connection = await pool.getConnection();
-        // Verifica se o treino existe e é do tipo 'multi_group' (opcional, mas recomendado)
-        const [trainingRows]: any = await connection.execute("SELECT id, type FROM trainings WHERE id = ?", [trainingId]);
+        const [trainingRows]: any = await connection.execute("SELECT id, type FROM trainings WHERE id = ?", [numericTrainingId]);
         if (trainingRows.length === 0) {
             return res.status(404).json({ error: "Jogo de Aposta principal não encontrado." });
         }
-        // if (trainingRows[0].type !== 'multi_group') {
-        //     return res.status(400).json({ error: "Este treino não permite múltiplos grupos." });
-        // }
+        if (trainingRows[0].type !== 'multi_group') { // Garantir que só se adiciona grupos a Jogos de Aposta
+            return res.status(400).json({ error: "Este treino não permite múltiplos grupos." });
+        }
 
         await connection.beginTransaction();
 
-        // Cria o novo grupo
         const accessCode = Math.random().toString(36).substring(2, 8).toUpperCase();
         const [groupResult]: any = await connection.execute(
             "INSERT INTO training_groups (trainingId, startHole, accessCode) VALUES (?, ?, ?)",
-            [trainingId, startHole, accessCode]
+            [numericTrainingId, numericStartHole, accessCode]
         );
         const newGroupId = groupResult.insertId;
 
-        // Adiciona os participantes a este novo grupo
-        const participantValues = players.map(player => [
+        const participantValues = players.map((player: { id: string | number }) => [
             newGroupId,
-            player.id,
-            player.id === responsiblePlayerId ? 1 : 0, // Marca o responsável
-            'accepted' // Assume aceite ao criar
+            parseInt(player.id as string, 10), // Converter ID do jogador
+            parseInt(player.id as string, 10) === numericResponsiblePlayerId ? 1 : 0, 
+            'accepted' 
         ]);
         await connection.query(
             "INSERT INTO training_participants (trainingGroupId, playerId, isResponsible, invitationStatus) VALUES ?",
@@ -192,103 +216,75 @@ app.post("/api/trainings/:trainingId/groups", async (req: Request, res: Response
         );
 
         await connection.commit();
-
         res.status(201).json({
             message: "Novo grupo adicionado ao Jogo de Aposta!",
             trainingGroupId: newGroupId,
-            accessCode: accessCode // Código SÓ para este novo grupo
+            accessCode: accessCode 
         });
 
-    } catch (error) {
+    } catch (error: any) {
         if (connection) await connection.rollback();
         console.error("Erro ao adicionar grupo ao treino:", error);
-        res.status(500).json({ error: "Erro interno ao adicionar grupo." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/trainings/:trainingId/leaderboard", async (req: Request, res: Response) => {
+app.get("/api/trainings/:trainingId/leaderboard", async (req: Request, res: Response, next: NextFunction) => {
     const { trainingId } = req.params;
     let connection;
-
     try {
         connection = await pool.getConnection();
-
-        // Buscar info do treino e campo
         const [trainingInfo]: any[] = await connection.execute(
             `SELECT t.id, t.date, c.name as courseName, c.id as courseId, t.type
              FROM trainings t
              JOIN courses c ON t.courseId = c.id
              WHERE t.id = ?`, [trainingId]
         );
-        if (trainingInfo.length === 0) {
-            return res.status(404).json({ error: "Treino não encontrado." });
-        }
+        if (trainingInfo.length === 0) return res.status(404).json({ error: "Treino não encontrado." });
+        
         const { courseId, courseName } = trainingInfo[0];
-
-        // Buscar PARs
-        const [holesResult]: any[] = await connection.execute(
-            "SELECT holeNumber, par FROM holes WHERE courseId = ? ORDER BY holeNumber", [courseId]
-        );
+        const [holesResult]: any[] = await connection.execute("SELECT holeNumber, par FROM holes WHERE courseId = ? ORDER BY holeNumber", [courseId]);
         const parMap = new Map(holesResult.map((h: { holeNumber: number, par: number }) => [h.holeNumber, h.par]));
-
-        // Buscar TODOS os grupos deste treino
-        const [groups]: any[] = await connection.execute(
-            "SELECT id FROM training_groups WHERE trainingId = ?", [trainingId]
-        );
-        if (groups.length === 0) {
-            return res.json({ trainingName: `Jogo em ${courseName}`, leaderboard: [] });
-        }
+        const [groups]: any[] = await connection.execute("SELECT id FROM training_groups WHERE trainingId = ?", [trainingId]);
+        if (groups.length === 0) return res.json({ trainingName: `Jogo em ${courseName}`, leaderboard: [] });
+        
         const groupIds = groups.map((g: { id: number }) => g.id);
-
-        // Buscar TODOS os participantes destes grupos
-        // Definindo um tipo para o participante aqui
+        
         interface ParticipantInfo { playerId: number; fullName: string; gender: 'Male' | 'Female'; }
         const [participants]: any[] = await connection.execute(
             `SELECT DISTINCT p.id as playerId, p.fullName, p.gender
              FROM training_participants tp
              JOIN players p ON tp.playerId = p.id
-             WHERE tp.trainingGroupId IN (?) AND tp.invitationStatus = 'accepted'`,
-            [groupIds]
+             WHERE tp.trainingGroupId IN (?) AND tp.invitationStatus = 'accepted'`, [groupIds]
         );
 
-        // Buscar TODOS os scores destes grupos
-        const [allScoresResult]: any[] = await connection.execute(
-            `SELECT playerId, holeNumber, strokes
-             FROM training_scores
-             WHERE trainingGroupId IN (?)`,
-            [groupIds]
-        );
+        const [allScoresResult]: any[] = await connection.execute(`SELECT playerId, holeNumber, strokes FROM training_scores WHERE trainingGroupId IN (?)`, [groupIds]);
         const allScores: ScoreQueryResult[] = allScoresResult as ScoreQueryResult[];
 
-        // Calcular leaderboard combinado
-        // CORREÇÃO: Adicionar tipo explícito para 'player' (usando ParticipantInfo)
         const leaderboardData: TrainingLeaderboardPlayer[] = participants.map((player: ParticipantInfo): TrainingLeaderboardPlayer => {
             const playerScores = allScores.filter(s => s.playerId === player.playerId);
             const totalStrokes = playerScores.reduce((sum, s) => sum + (s.strokes || 0), 0);
             let parThrough = 0;
-            playerScores.forEach(s => {
-                parThrough += Number(parMap.get(s.holeNumber) ?? 0);
-            });
+            playerScores.forEach(s => { parThrough += Number(parMap.get(s.holeNumber) ?? 0); });
             const holesPlayed = playerScores.filter(s => s.strokes !== null).length;
 
             return {
                 playerId: player.playerId,
                 fullName: player.fullName,
-                gender: player.gender, // Incluído se necessário depois
+                gender: player.gender, 
                 totalStrokes,
                 through: holesPlayed,
                 toParGross: totalStrokes - parThrough,
             };
         });
 
-        // Ordenar por Gross Score
-        // CORREÇÃO: Adicionar tipos explícitos para 'a' e 'b' (usando TrainingLeaderboardPlayer)
-        leaderboardData.sort((a: TrainingLeaderboardPlayer, b: TrainingLeaderboardPlayer) => {
+        leaderboardData.sort((a, b) => {
             const scoreDiff = a.totalStrokes - b.totalStrokes;
             if (scoreDiff !== 0) return scoreDiff;
-            return a.fullName.localeCompare(b.fullName); // Desempate por nome
+            return a.fullName.localeCompare(b.fullName);
         });
 
         res.json({
@@ -296,16 +292,16 @@ app.get("/api/trainings/:trainingId/leaderboard", async (req: Request, res: Resp
             leaderboard: leaderboardData
         });
 
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro ao gerar leaderboard de treino:", error);
-        res.status(500).json({ error: "Erro interno ao gerar placar do treino." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.delete("/api/trainings/:trainingId/creator/:creatorId", async (req: Request, res: Response) => {
-    // ... (código existente sem alterações nos tipos) ...
+app.delete("/api/trainings/:trainingId/creator/:creatorId", async (req: Request, res: Response, next: NextFunction) => {
     const { trainingId, creatorId } = req.params;
     let connection;
     try {
@@ -325,21 +321,22 @@ app.delete("/api/trainings/:trainingId/creator/:creatorId", async (req: Request,
         await connection.execute("DELETE FROM trainings WHERE id = ?", [trainingId]);
         await connection.commit();
         res.status(200).json({ message: "Treino apagado com sucesso." });
-    } catch (error) {
+    } catch (error: any) {
         if (connection) await connection.rollback();
         console.error("Erro ao apagar treino:", error);
-        res.status(500).json({ error: "Erro interno ao apagar o treino." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/users/:userId/trainings", async (req: Request, res: Response) => {
-    // ... (código existente sem alterações nos tipos) ...
+app.get("/api/users/:userId/trainings", async (req: Request, res: Response, next: NextFunction) => {
     const { userId } = req.params;
     let connection;
     try {
         connection = await pool.getConnection();
+        // Esta rota agora busca AMBOS os tipos de treino ativos (single_group e multi_group)
         const [trainings] = await connection.execute(
             `SELECT t.id, t.date, t.status, c.name as courseName, tg.accessCode, t.creatorId, tg.id as trainingGroupId, t.type
              FROM trainings t
@@ -350,43 +347,64 @@ app.get("/api/users/:userId/trainings", async (req: Request, res: Response) => {
              ORDER BY t.date DESC`, [userId]
         );
         res.json(trainings);
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro ao buscar treinos ativos:", error);
-        res.status(500).json({ error: "Erro ao buscar treinos ativos." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/trainings/history/player/:playerId", async (req: Request, res: Response) => {
-    // ... (código existente com a correção do sort) ...
+// ROTA MODIFICADA (Lógica #4)
+app.get("/api/history/player/:playerId", async (req: Request, res: Response, next: NextFunction) => {
     const { playerId } = req.params;
     let connection;
     try {
         connection = await pool.getConnection();
-        const [trainings] = await connection.execute(
-            `SELECT t.id, t.date, t.finishedAt, c.name as courseName, tg.id as trainingGroupId, t.finishedAt
+
+        // Esta rota AGORA SÓ RETORNA TREINOS (single_group e multi_group)
+        const [trainings]: any[] = await connection.execute(
+            `SELECT
+                t.id,
+                CASE 
+                    WHEN t.type = 'multi_group' THEN 'Jogo de Aposta'
+                    ELSE 'Treino em Grupo'
+                END as name,
+                t.date,
+                t.finishedAt,
+                c.name as courseName,
+                t.type,
+                tg.id as groupId 
              FROM trainings t
              JOIN courses c ON t.courseId = c.id
              JOIN training_groups tg ON t.id = tg.trainingId
-             JOIN training_participants tp ON tg.id = tp.trainingGroupId
-             WHERE tp.playerId = ? AND t.status = 'completed'
-             ORDER BY t.finishedAt DESC`, [playerId]
+             WHERE
+                t.status = 'completed'
+                AND EXISTS (
+                    SELECT 1
+                    FROM training_participants tp
+                    WHERE tp.trainingGroupId = tg.id AND tp.playerId = ?
+                )
+             GROUP BY t.id, tg.id -- Agrupar para evitar duplicatas se um jogador estiver em múltiplos grupos do mesmo treino (embora a lógica atual não suporte isso)
+             ORDER BY t.finishedAt DESC`,
+            [playerId]
         );
-        // CORREÇÃO: Adicionar ': any' aos parâmetros 'a' e 'b'
-        (trainings as any[]).sort((a: any, b: any) => (new Date(b.finishedAt).getTime() || 0) - (new Date(a.finishedAt).getTime() || 0));
+
+        // A query de torneios foi REMOVIDA daqui
+        
         res.json(trainings);
-    } catch (error) {
-        console.error("Erro ao buscar histórico:", error);
-        res.status(500).json({ error: "Erro ao buscar histórico." });
+    } catch (error: any) {
+        console.error("Erro ao buscar histórico de treinos:", error);
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
 
-app.get("/api/trainings/groups/:groupId/participants", async (req: Request, res: Response) => {
-    // ... (código existente sem alterações nos tipos) ...
+app.get("/api/trainings/groups/:groupId/participants", async (req: Request, res: Response, next: NextFunction) => {
     const { groupId } = req.params;
     let connection;
     try {
@@ -398,20 +416,22 @@ app.get("/api/trainings/groups/:groupId/participants", async (req: Request, res:
              WHERE tp.trainingGroupId = ?
              ORDER BY p.fullName`, [groupId] );
         res.json(participants);
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro ao buscar participantes do treino:", error);
-        res.status(500).json({ error: "Erro ao buscar participantes." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/trainings/:trainingGroupId/export/:playerId", async (req: Request, res: Response) => {
-    // ... (código existente sem alterações nos tipos) ...
+// Rota antiga de exportação individual de treino
+app.get("/api/trainings/:trainingGroupId/export/:playerId", async (req: Request, res: Response, next: NextFunction) => {
      let connection;
     try {
         const { trainingGroupId, playerId } = req.params;
         connection = await pool.getConnection();
+        // ... (código original mantido para compatibilidade, mas a nova rota /api/export/scorecard/... é melhor)
         const [playerInfo]: any[] = await connection.execute("SELECT fullName FROM players WHERE id = ?", [playerId]);
         const [trainingInfo]: any[] = await connection.execute(
             `SELECT t.date, c.name as courseName FROM trainings t
@@ -456,15 +476,17 @@ app.get("/api/trainings/:trainingGroupId/export/:playerId", async (req: Request,
         res.setHeader('Content-Disposition', `attachment; filename=Cartao_Treino_${playerInfo[0].fullName.replace(/\s+/g, '_')}.xlsx`);
         await workbook.xlsx.write(res);
         res.end();
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro ao exportar cartão:", error);
-        res.status(500).json({ error: "Erro ao exportar." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
-app.get("/api/trainings/export/grupo/:groupId", async (req: Request, res: Response) => {
-    // ... (código existente com correções de tipo 'p') ...
+
+// Rota antiga de exportação de grupo de treino
+app.get("/api/trainings/export/grupo/:groupId", async (req: Request, res: Response, next: NextFunction) => {
     const { groupId } = req.params;
     let connection;
     try {
@@ -475,15 +497,14 @@ app.get("/api/trainings/export/grupo/:groupId", async (req: Request, res: Respon
              JOIN training_groups tg ON t.id = tg.trainingId
              JOIN courses c ON t.courseId = c.id
              WHERE tg.id = ?`, [groupId] );
-        if (trainingInfo.length === 0) {
-            return res.status(404).send('Grupo de treino não encontrado.');
-        }
+        if (trainingInfo.length === 0) return res.status(404).send('Grupo de treino não encontrado.');
+        
         const [playersResult]: any[] = await connection.execute(
             `SELECT p.id, p.fullName
              FROM players p
              JOIN training_participants tp ON p.id = tp.playerId
              WHERE tp.trainingGroupId = ? AND tp.invitationStatus = 'accepted'`, [groupId] );
-        const players: PlayerQueryResult[] = playersResult as PlayerQueryResult[]; // Cast
+        const players: PlayerQueryResult[] = playersResult as PlayerQueryResult[]; 
         const workbook = new ExcelJS.Workbook();
         const sheet = workbook.addWorksheet('Resultados do Grupo');
         sheet.mergeCells('A1:D1');
@@ -492,13 +513,11 @@ app.get("/api/trainings/export/grupo/:groupId", async (req: Request, res: Respon
         sheet.addRow(['Data', new Date(trainingInfo[0].date).toLocaleDateString('pt-BR', {timeZone: 'UTC'})]);
         sheet.addRow([]);
         const headers = ['Buraco', 'Par'];
-        // CORREÇÃO: Adicionar tipo explícito para 'p'
         players.forEach((p: { id: number; fullName: string }) => headers.push(p.fullName));
         sheet.addRow(headers).font = { bold: true };
         const [holesResult]: any[] = await connection.execute('SELECT holeNumber, par FROM holes WHERE courseId = ? ORDER BY holeNumber', [trainingInfo[0].courseId]);
         const holes: { holeNumber: number; par: number }[] = holesResult as { holeNumber: number; par: number }[];
         const totals: Record<string, number> = {};
-        // CORREÇÃO: Adicionar tipo explícito para 'p'
         players.forEach((p: { id: number; fullName: string }) => totals[p.id] = 0);
         for (const hole of holes) {
             const rowData: (string | number)[] = [hole.holeNumber, hole.par];
@@ -513,48 +532,42 @@ app.get("/api/trainings/export/grupo/:groupId", async (req: Request, res: Respon
             sheet.addRow(rowData);
         }
         const totalRow: (string | number)[] = ['Total', ''];
-        // CORREÇÃO: Adicionar tipo explícito para 'p'
         players.forEach((p: { id: number; fullName: string }) => totalRow.push(totals[p.id]));
         sheet.addRow(totalRow).font = { bold: true };
-        sheet.columns.forEach(column => {
-             if (column.eachCell) {
-                let maxLength = 0;
-                column.eachCell({ includeEmpty: true }, (cell) => {
-                    const len = cell.value ? cell.value.toString().length : 10;
-                    if (len > maxLength) { maxLength = len; }
-                });
-                column.width = maxLength < 12 ? 12 : maxLength + 2;
-            }
-        });
+        sheet.columns.forEach(column => { /* ... ajuste largura ... */ });
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.setHeader('Content-Disposition', `attachment; filename=resultado_grupo_${groupId}.xlsx`);
         await workbook.xlsx.write(res);
         res.end();
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro ao exportar resultado do grupo de treino:", error);
-        res.status(500).json({ error: "Erro ao exportar." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/courses/public", async (req: Request, res: Response) => {
-    // ... (código existente) ...
+// ===================================================================
+// FIM DO BLOCO DE TREINO
+// ===================================================================
+
+app.get("/api/courses/public", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         connection = await pool.getConnection();
         const [rows] = await connection.execute("SELECT id, name FROM courses ORDER BY name ASC");
         res.json(rows);
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro ao buscar campos públicos:", error);
-        res.status(500).json({ error: "Erro ao buscar campos." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/tournaments/:tournamentId/confirmed-players", async (req: Request, res: Response) => {
-    // ... (código existente) ...
+app.get("/api/tournaments/:tournamentId/confirmed-players", async (req: Request, res: Response, next: NextFunction) => {
     const { tournamentId } = req.params;
     let connection;
     try {
@@ -566,16 +579,16 @@ app.get("/api/tournaments/:tournamentId/confirmed-players", async (req: Request,
              WHERE tr.tournamentId = ? AND tr.paymentStatus = 'confirmed'
              ORDER BY p.fullName ASC`, [tournamentId] );
         res.json(players);
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro ao buscar jogadores confirmados:", error);
-        res.status(500).json({ error: "Erro ao buscar jogadores confirmados." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-// --- ROTA LEADERBOARD DE TORNEIO (com correções de tipo) ---
-app.get("/api/tournaments/:tournamentId/leaderboard", async (req: Request, res: Response) => {
+app.get("/api/tournaments/:tournamentId/leaderboard", async (req: Request, res: Response, next: NextFunction) => {
     const { tournamentId } = req.params;
     let connection;
     try {
@@ -587,7 +600,6 @@ app.get("/api/tournaments/:tournamentId/leaderboard", async (req: Request, res: 
             `SELECT h.holeNumber, h.par FROM holes h JOIN courses c ON h.courseId = c.id JOIN tournaments t ON c.id = t.courseId WHERE t.id = ?`,
             [tournamentId]
         );
-        // CORREÇÃO: Adicionar tipo para 'h'
         const parMap = new Map(holesResult.map((h: { holeNumber: number; par: number }) => [h.holeNumber, h.par]));
 
         const [playerDataResult]: any[] = await connection.execute(
@@ -597,38 +609,47 @@ app.get("/api/tournaments/:tournamentId/leaderboard", async (req: Request, res: 
              LEFT JOIN tournament_categories tcat ON tr.categoryId = tcat.id WHERE g.tournamentId = ?`,
             [tournamentId]
         );
-         const playerData: PlayerQueryResult[] = playerDataResult as PlayerQueryResult[]; // Cast
+         const playerData: PlayerQueryResult[] = playerDataResult as PlayerQueryResult[]; 
 
         const [allScoresResult]: any[] = await connection.execute(
             `SELECT s.playerId, s.holeNumber, s.strokes FROM scores s JOIN \`groups\` g ON s.groupId = g.id WHERE g.tournamentId = ?`,
             [tournamentId]
         );
-        const allScores: ScoreQueryResult[] = allScoresResult as ScoreQueryResult[]; // Cast
+        const allScores: ScoreQueryResult[] = allScoresResult as ScoreQueryResult[]; 
 
-        // CORREÇÃO: Adicionar tipos para 'player', 's', 'sum'
         const leaderboardData = playerData.map((player: PlayerQueryResult) => {
             const playerScores = allScores.filter((s: ScoreQueryResult) => s.playerId === player.playerId);
             const totalStrokes = playerScores.reduce((sum: number, s: ScoreQueryResult) => sum + (s.strokes || 0), 0);
             const netScore = totalStrokes - (player.courseHandicap || 0);
             let parThrough = 0;
             playerScores.forEach((s: ScoreQueryResult) => {
-                // CORREÇÃO: Usar Number() para evitar erro TS2365
                 parThrough += Number(parMap.get(s.holeNumber) ?? 0);
             });
-            return { ...player, totalStrokes, netScore, through: playerScores.length, parThrough,
-                     toParGross: totalStrokes - parThrough, netToPar: netScore - parThrough };
+            const leaderboardPlayer : Partial<ScorecardPlayer> = {
+                ...player,
+                playerId: player.playerId, 
+                id: player.playerId, 
+                totalStrokes,
+                netScore,
+                through: playerScores.length,
+                parThrough,
+                toParGross: totalStrokes - parThrough,
+                netToPar: netScore - parThrough,
+                scores: playerScores 
+             };
+            return leaderboardPlayer;
         });
 
         res.json({ tournamentName: tournamentInfo[0].name, leaderboard: leaderboardData });
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro ao gerar leaderboard:", error);
-        res.status(500).json({ error: "Erro interno ao gerar o leaderboard." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-// --- LÓGICA DE EXPORTAÇÃO (com correções) ---
 const scorecardStyler = {
     headerFill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F2937' } } as ExcelJS.FillPattern,
     headerFont: { color: { argb: 'FF34D399' }, bold: true, size: 12 },
@@ -639,17 +660,14 @@ const scorecardStyler = {
     totalsFont: { bold: true, color: { argb: 'FF34D399' } },
     borderStyle: { style: 'thin', color: { argb: 'FF4B5563' } } as ExcelJS.Border,
     applyBorders: (cell: ExcelJS.Cell) => {
-        // CORREÇÃO: Garantir tipo Partial<Borders>
         cell.border = { top: scorecardStyler.borderStyle, left: scorecardStyler.borderStyle, bottom: scorecardStyler.borderStyle, right: scorecardStyler.borderStyle };
     },
-    // CORREÇÃO: Usar Partial<Color> para teeColors
     teeColors: {
         BLUE: { argb: 'FF0000FF' }, GOLD: { argb: 'FFFFD700' }, RED: { argb: 'FFFF0000' }, WHITE: { argb: 'FF000000' }
     } as Record<string, Partial<ExcelJS.Color>>
 };
 
 const buildHorizontalScorecard = async (sheet: ExcelJS.Worksheet, title: string, subtitle: string, courseData: CourseForScorecard, playersData: ScorecardPlayer[]) => {
-    // ... (código da função sem alterações de tipo significativas, já corrigidas antes) ...
      sheet.mergeCells('A1:Z1'); sheet.getCell('A1').value = title; sheet.getCell('A1').font = scorecardStyler.titleFont; sheet.getCell('A1').alignment = { vertical: 'middle', horizontal: 'center' };
      sheet.mergeCells('A2:Z2'); sheet.getCell('A2').value = subtitle; sheet.getCell('A2').font = scorecardStyler.subtitleFont; sheet.getCell('A2').alignment = { vertical: 'middle', horizontal: 'center' }; sheet.addRow([]);
      const headers_campo = ['HOLE', null, ...Array.from({ length: 9 }, (_, i) => i + 1), 'OUT', ...Array.from({ length: 9 }, (_, i) => i + 10), 'IN', 'TOTAL'];
@@ -683,14 +701,11 @@ const buildHorizontalScorecard = async (sheet: ExcelJS.Worksheet, title: string,
 };
 
 const buildGrossChampionsSheet = (sheet: ExcelJS.Worksheet, players: ScorecardPlayer[]) => {
-    // ... (código da função com correções de borda/fonte) ...
     sheet.addRow(['Campeões Gross']).font = { size: 16, bold: true }; sheet.mergeCells('A1:C1'); sheet.getRow(1).alignment = { horizontal: 'center' }; sheet.addRow([]);
     const headers = ['Pos.', 'Nome', 'GROSS']; const headerRow = sheet.addRow(headers);
     headerRow.eachCell(cell => {
-        // CORREÇÃO: Usar headerFont
         cell.font = scorecardStyler.headerFont;
         cell.fill = scorecardStyler.headerFill;
-        // CORREÇÃO: Usar applyBorders
         scorecardStyler.applyBorders(cell);
         cell.alignment = { horizontal: 'center' };
     });
@@ -698,7 +713,6 @@ const buildGrossChampionsSheet = (sheet: ExcelJS.Worksheet, players: ScorecardPl
     sortedPlayers.forEach((player, index) => {
         const row = sheet.addRow([index + 1, player.fullName, player.totalStrokes]); row.getCell(2).font = scorecardStyler.playerFont;
         row.eachCell(cell => {
-            // CORREÇÃO: Usar applyBorders
              scorecardStyler.applyBorders(cell);
             cell.alignment = { horizontal: 'center' };
         });
@@ -707,17 +721,16 @@ const buildGrossChampionsSheet = (sheet: ExcelJS.Worksheet, players: ScorecardPl
     sheet.getColumn('B').width = 35; sheet.getColumn('A').width = 6; sheet.getColumn('C').width = 8;
 };
 
-// CORREÇÃO: Função categorizePlayer aceita handicap opcional
 const categorizePlayer = (player: { gender: 'Male' | 'Female', courseHandicap?: number }): string => {
-    const hcp = player.courseHandicap ?? 99;
+    const hcp = player.courseHandicap ?? 99; 
     if (player.gender === 'Male') {
         if (hcp <= 8.5) return 'M1'; if (hcp <= 14.0) return 'M2'; if (hcp <= 22.2) return 'M3'; return 'M4';
     } else {
         if (hcp <= 13.1) return 'F1'; if (hcp <= 21.2) return 'F2'; if (hcp <= 28.3) return 'F3'; return 'F4';
     }
 };
-app.get("/api/export/scorecard/tournament/:tournamentId", async (req: Request, res: Response) => {
-    // ... (código da rota com correções de tipo 's', 'sum', courseData, categorizePlayer) ...
+
+app.get("/api/export/scorecard/tournament/:tournamentId", async (req: Request, res: Response, next: NextFunction) => {
      const { tournamentId } = req.params; let connection;
     try {
         connection = await pool.getConnection();
@@ -726,15 +739,14 @@ app.get("/api/export/scorecard/tournament/:tournamentId", async (req: Request, r
         const { name: tournamentName, date: tournamentDate, courseName, courseId } = tournamentInfo[0];
         const [holesResult]: any[] = await connection.execute( `SELECT id, holeNumber, par FROM holes WHERE courseId = ? ORDER BY holeNumber ASC`, [courseId] );
         const holes: HoleQueryResult[] = holesResult as HoleQueryResult[];
-        for (const hole of holes) { const [tees] = await connection.execute("SELECT * FROM tees WHERE holeId = ?", [hole.id]); hole.tees = tees as TeeData[] ?? []; } // Garantir array
-        const courseData: CourseForScorecard = { holes }; // Agora compatível
-        const [playerDataResult]: any[] = await connection.execute( `SELECT p.id as playerId, p.fullName, p.gender, gp.courseHandicap FROM players p JOIN group_players gp ON p.id = gp.playerId JOIN \`groups\` g ON gp.groupId = g.id WHERE g.tournamentId = ?`, [tournamentId] );
+        for (const hole of holes) { const [tees] = await connection.execute("SELECT * FROM tees WHERE holeId = ?", [hole.id]); hole.tees = tees as TeeData[] ?? []; }
+        const courseData: CourseForScorecard = { holes, courseName, date: tournamentDate }; 
+        const [playerDataResult]: any[] = await connection.execute( `SELECT p.id as playerId, p.fullName, p.gender, gp.courseHandicap, tcat.name as categoryName FROM players p JOIN group_players gp ON p.id = gp.playerId JOIN \`groups\` g ON gp.groupId = g.id LEFT JOIN tournament_registrations tr ON tr.playerId = p.id AND tr.tournamentId = g.tournamentId LEFT JOIN tournament_categories tcat ON tr.categoryId = tcat.id WHERE g.tournamentId = ?`, [tournamentId] );
          const playerData: PlayerQueryResult[] = playerDataResult as PlayerQueryResult[];
         const [allScoresResult]: any[] = await connection.execute( `SELECT s.playerId, s.holeNumber, s.strokes FROM scores s JOIN \`groups\` g ON s.groupId = g.id WHERE g.tournamentId = ?`, [tournamentId] );
          const allScores: ScoreQueryResult[] = allScoresResult as ScoreQueryResult[];
         const playersWithScores: ScorecardPlayer[] = [];
         for (const p of playerData) {
-            // CORREÇÃO: Adicionar tipos para 's' e 'sum'
             const playerScores = allScores.filter((s: ScoreQueryResult) => s.playerId === p.playerId);
             const totalStrokes = playerScores.reduce((sum: number, s: ScoreQueryResult) => sum + (s.strokes || 0), 0);
             const netScore = totalStrokes - (p.courseHandicap ?? 0);
@@ -744,13 +756,20 @@ app.get("/api/export/scorecard/tournament/:tournamentId", async (req: Request, r
                  const hcpProportional = (p.courseHandicap ?? 0) * (count / 18.0); return grossSum - hcpProportional;
             };
             const tieBreakScores = { last9: calculateNetTieBreak(10, 9), last6: calculateNetTieBreak(13, 6), last3: calculateNetTieBreak(16, 3), last1: (playerScores.find((s: ScoreQueryResult) => s.holeNumber === 18)?.strokes || 0) - ((p.courseHandicap ?? 0) / 18.0) };
-            playersWithScores.push({ ...p, id: p.playerId, scores: playerScores, totalStrokes, netScore, tieBreakScores });
+             playersWithScores.push({ ...p, id: p.playerId, scores: playerScores.map(s => ({holeNumber: s.holeNumber, strokes: s.strokes})), totalStrokes, netScore, tieBreakScores });
         }
-        const tiebreakSort = (a: ScorecardPlayer, b: ScorecardPlayer) => { /* ... (lógica de sort) ... */ const netDiff = (a.netScore ?? 999) - (b.netScore ?? 999); if (netDiff !== 0) return netDiff; const hcpDiff = (a.courseHandicap ?? 99) - (b.courseHandicap ?? 99); if (hcpDiff !== 0) { a.tieBreakReason = 'Desempate: Menor HDC'; b.tieBreakReason = 'Desempate: Menor HDC'; return hcpDiff; } const last9Diff = a.tieBreakScores.last9 - b.tieBreakScores.last9; if (last9Diff !== 0) { a.tieBreakReason = 'Desempate: Últimos 9 NET'; b.tieBreakReason = 'Desempate: Últimos 9 NET'; return last9Diff; } const last6Diff = a.tieBreakScores.last6 - b.tieBreakScores.last6; if (last6Diff !== 0) { a.tieBreakReason = 'Desempate: Últimos 6 NET'; b.tieBreakReason = 'Desempate: Últimos 6 NET'; return last6Diff; } const last3Diff = a.tieBreakScores.last3 - b.tieBreakScores.last3; if (last3Diff !== 0) { a.tieBreakReason = 'Desempate: Últimos 3 NET'; b.tieBreakReason = 'Desempate: Últimos 3 NET'; return last3Diff; } const last1Diff = a.tieBreakScores.last1 - b.tieBreakScores.last1; if (last1Diff !== 0) { a.tieBreakReason = 'Desempate: Último Buraco NET'; b.tieBreakReason = 'Desempate: Último Buraco NET'; return last1Diff; } a.tieBreakReason = 'Desempate: Sorteio'; b.tieBreakReason = 'Desempate: Sorteio'; return a.playerId - b.playerId; };
+        const tiebreakSort = (a: ScorecardPlayer, b: ScorecardPlayer): number => {
+            const netDiff = (a.netScore ?? 999) - (b.netScore ?? 999); if (netDiff !== 0) return netDiff;
+            const hcpDiff = (a.courseHandicap ?? 99) - (b.courseHandicap ?? 99); if (hcpDiff !== 0) { a.tieBreakReason = 'Desempate: Menor HDC'; b.tieBreakReason = 'Desempate: Menor HDC'; return hcpDiff; }
+            const last9Diff = a.tieBreakScores.last9 - b.tieBreakScores.last9; if (last9Diff !== 0) { a.tieBreakReason = 'Desempate: Últimos 9 NET'; b.tieBreakReason = 'Desempate: Últimos 9 NET'; return last9Diff; }
+            const last6Diff = a.tieBreakScores.last6 - b.tieBreakScores.last6; if (last6Diff !== 0) { a.tieBreakReason = 'Desempate: Últimos 6 NET'; b.tieBreakReason = 'Desempate: Últimos 6 NET'; return last6Diff; }
+            const last3Diff = a.tieBreakScores.last3 - b.tieBreakScores.last3; if (last3Diff !== 0) { a.tieBreakReason = 'Desempate: Últimos 3 NET'; b.tieBreakReason = 'Desempate: Últimos 3 NET'; return last3Diff; }
+            const last1Diff = a.tieBreakScores.last1 - b.tieBreakScores.last1; if (last1Diff !== 0) { a.tieBreakReason = 'Desempate: Último Buraco NET'; b.tieBreakReason = 'Desempate: Último Buraco NET'; return last1Diff; }
+            a.tieBreakReason = 'Desempate: Sorteio'; b.tieBreakReason = 'Desempate: Sorteio'; return a.playerId - b.playerId;
+        };
         const categorizedData: { Male: Record<string, ScorecardPlayer[]>, Female: Record<string, ScorecardPlayer[]>} = { Male: { M1: [], M2: [], M3: [], M4: [] }, Female: { F1: [], F2: [], F3: [], F4: [] } };
         const allMalePlayers: ScorecardPlayer[] = []; const allFemalePlayers: ScorecardPlayer[] = [];
         playersWithScores.forEach(player => {
-            // CORREÇÃO: Passar objeto correto para categorizePlayer
             const category = categorizePlayer({ gender: player.gender, courseHandicap: player.courseHandicap });
             if (player.gender === 'Male') { categorizedData.Male[category].push(player); allMalePlayers.push(player); }
             else if (player.gender === 'Female') { categorizedData.Female[category].push(player); allFemalePlayers.push(player); }
@@ -760,11 +779,14 @@ app.get("/api/export/scorecard/tournament/:tournamentId", async (req: Request, r
         if(allMalePlayers.length > 0){ allMalePlayers.sort(tiebreakSort); await buildHorizontalScorecard(workbook.addWorksheet('Leaderboard NET Masculino'), `${tournamentName} - Leaderboard Geral NET Masculino`, subtitle, courseData, allMalePlayers); await Promise.all(['M1', 'M2', 'M3', 'M4'].map(async category => { const players = categorizedData.Male[category]; if (players.length > 0) { players.sort(tiebreakSort); await buildHorizontalScorecard(workbook.addWorksheet(`${category} Masculino`), `${tournamentName} - Categoria ${category} Masculino`, subtitle, courseData, players); } })); }
         if(allFemalePlayers.length > 0) { allFemalePlayers.sort(tiebreakSort); await buildHorizontalScorecard(workbook.addWorksheet('Leaderboard NET Feminino'), `${tournamentName} - Leaderboard Geral NET Feminino`, subtitle, courseData, allFemalePlayers); await Promise.all(['F1', 'F2', 'F3', 'F4'].map(async category => { const players = categorizedData.Female[category]; if (players.length > 0) { players.sort(tiebreakSort); await buildHorizontalScorecard(workbook.addWorksheet(`${category} Feminino`), `${tournamentName} - Categoria ${category} Feminino`, subtitle, courseData, players); } })); }
         const fileName = `relatorio_completo_${tournamentName.replace(/\s+/g, '_')}.xlsx`; res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); res.setHeader('Content-Disposition', `attachment; filename=${fileName}`); await workbook.xlsx.write(res); res.end();
-    } catch (error) { console.error("Erro ao exportar relatório de torneio:", error); res.status(500).json({ error: "Erro ao exportar." }); }
+    } catch (error) { 
+        console.error("Erro ao exportar relatório de torneio:", error); 
+        next(error); 
+    }
     finally { if (connection) connection.release(); }
 });
-// ... (O restante das suas rotas continua aqui) ...
-app.get("/api/courses", async (req: Request, res: Response) => {
+
+app.get("/api/courses", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { adminId } = req.query;
@@ -775,20 +797,22 @@ app.get("/api/courses", async (req: Request, res: Response) => {
         const params = adminId ? [adminId] : [];
         const [rows] = await connection.execute(query, params);
         res.json(rows);
-    } catch (error) {
-        res.status(500).json({ error: "Erro ao buscar campos." });
+    } catch (error: any) {
+        console.error("Erro ao buscar campos:", error);
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.post("/api/courses", upload.array("holeImages"), async (req: Request, res: Response) => {
+app.post("/api/courses", upload.array("holeImages"), async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { name, location, adminId } = req.body;
         const holes = JSON.parse(req.body.holes);
         const files = req.files as Express.Multer.File[];
-        const fileMap = new Map(files.map((f) => [f.originalname, f.filename]));
+        const fileMap = new Map(files?.map((f) => [f.originalname, f.filename]) ?? []);
 
         connection = await pool.getConnection();
         await connection.beginTransaction();
@@ -797,7 +821,6 @@ app.post("/api/courses", upload.array("holeImages"), async (req: Request, res: R
             "INSERT INTO courses (name, location, adminId) VALUES (?, ?, ?)",
             [name, location, adminId]
         );
-
         const newCourseId = courseResult.insertId;
 
         for (const holeData of holes) {
@@ -809,7 +832,6 @@ app.post("/api/courses", upload.array("holeImages"), async (req: Request, res: R
                 "INSERT INTO holes (courseId, holeNumber, par, aerialImageUrl) VALUES (?, ?, ?, ?)",
                 [newCourseId, holeData.holeNumber, holeData.par, imageUrl]
             );
-
             const newHoleId = holeResult.insertId;
 
             for (const teeColor in holeData.tees) {
@@ -822,39 +844,40 @@ app.post("/api/courses", upload.array("holeImages"), async (req: Request, res: R
                 }
             }
         }
-
         await connection.commit();
         res.status(201).json({ id: newCourseId, name, location });
-    } catch (error) {
+    } catch (error: any) {
         if (connection) await connection.rollback();
         console.error("Erro ao criar campo completo:", error);
-        res.status(500).json({ error: "Erro ao criar o campo no banco de dados" });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.delete("/api/courses/:id", async (req: Request, res: Response) => {
+app.delete("/api/courses/:id", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { id } = req.params;
         connection = await pool.getConnection();
         await connection.execute("DELETE FROM courses WHERE id = ?", [id]);
         res.status(200).json({ message: "Campo apagado com sucesso." });
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro ao apagar campo:", error);
         if ((error as any).code === "ER_ROW_IS_REFERENCED_2") {
             return res.status(400).json({
                 error: "Não pode apagar este campo, pois ele está a ser usado por um ou mais torneios.",
             });
         }
-        res.status(500).json({ error: "Erro ao apagar campo." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/courses/:id/details", async (req: Request, res: Response) => {
+app.get("/api/courses/:id/details", async (req: Request, res: Response, next: NextFunction) => {
     const { id } = req.params;
     let connection;
     try {
@@ -880,15 +903,16 @@ app.get("/api/courses/:id/details", async (req: Request, res: Response) => {
         }
         course.holes = holes;
         res.json(course);
-    } catch (error) {
-        console.error("Error as buscar detalhes completes do campo:", error);
-        res.status(500).json({ error: "Error as buscar detalhes do campo" });
+    } catch (error: any) {
+        console.error("Error ao buscar detalhes completos do campo:", error);
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.put("/api/courses/:id/details", async (req: Request, res: Response) => {
+app.put("/api/courses/:id/details", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { id } = req.params;
@@ -913,16 +937,17 @@ app.put("/api/courses/:id/details", async (req: Request, res: Response) => {
         }
         await connection.commit();
         res.status(200).json({ message: "Campo atualizado com sucesso." });
-    } catch (error) {
+    } catch (error: any) {
         if (connection) await connection.rollback();
         console.error("Erro ao atualizar campo:", error);
-        res.status(500).json({ error: "Erro ao atualizar o campo." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.post("/api/tournaments", async (req: Request, res: Response) => {
+app.post("/api/tournaments", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { name, date, courseId, startTime, adminId, categories } = req.body;
@@ -941,37 +966,195 @@ app.post("/api/tournaments", async (req: Request, res: Response) => {
         }
         await connection.commit();
         res.status(201).json({ id: newTournamentId, ...req.body });
-    } catch (error) {
+    } catch (error: any) {
         if (connection) await connection.rollback();
         console.error("Error ao criar torneio:", error);
-        res.status(500).json({ error: "Error ao criar torneio" });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/tournaments", async (req: Request, res: Response) => {
+app.get("/api/tournaments", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
-        const { adminId } = req.query;
-        if (!adminId) {
-            return res.status(400).json({ error: "Admin ID é obrigatório para listar os torneios." });
-        }
+        const { adminId, status } = req.query; 
         connection = await pool.getConnection();
-        const [rows] = await connection.execute(
-            "SELECT * FROM tournaments WHERE adminId = ? ORDER BY date DESC",
-            [adminId]
-        );
+        
+        let query = "SELECT * FROM tournaments";
+        const params: (string | number)[] = [];
+        const conditions: string[] = [];
+
+        if (adminId) {
+            conditions.push("adminId = ?");
+            params.push(adminId as string);
+        }
+        
+        if (status === 'active') {
+             conditions.push("(status = 'IN_PROGRESS' OR status = 'SCHEDULED' OR status = 'pending')");
+        } else if (status) {
+             conditions.push("status = ?");
+             params.push(status as string);
+        }
+
+        if (conditions.length > 0) {
+            query += " WHERE " + conditions.join(" AND ");
+        }
+        
+        query += " ORDER BY date DESC";
+        
+        const [rows] = await connection.execute(query, params);
         res.json(rows);
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro ao buscar torneios:", error);
-        res.status(500).json({ error: "Erro ao buscar torneios" });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/tournaments/:tournamentId/public", async (req: Request, res: Response) => {
+// ROTA MODIFICADA (Lógica #2) - Agora busca torneios FINALIZADOS
+app.get("/api/tournaments/finalized", async (req: Request, res: Response, next: NextFunction) => {
+    let connection;
+    try {
+        connection = await pool.getConnection();
+        const [rows] = await connection.execute(
+            "SELECT id, name, date, finishedAt FROM tournaments WHERE status = 'completed' ORDER BY finishedAt DESC"
+        );
+        res.json(rows);
+    } catch (error: any) {
+        console.error("Erro ao buscar torneios finalizados:", error);
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+// NOVA ROTA (Lógica #2) - Busca eventos ATIVOS (Torneios E Jogos de Aposta)
+app.get("/api/events/active", async (req: Request, res: Response, next: NextFunction) => {
+    let connection;
+    try {
+        connection = await pool.getConnection();
+        
+        // Query para Torneios Ativos
+        const [tournaments] = await connection.execute(
+            `SELECT id, name, date, 'tournament' as eventType 
+             FROM tournaments 
+             WHERE status = 'IN_PROGRESS' OR status = 'SCHEDULED' OR status = 'pending'`
+        );
+
+        // Query para Jogos de Aposta (multi_group trainings) Ativos
+        const [trainings] = await connection.execute(
+            `SELECT id, CONCAT('Jogo de Aposta: ', c.name) as name, date, 'training' as eventType 
+             FROM trainings t
+             JOIN courses c ON t.courseId = c.id
+             WHERE (t.status = 'active' OR t.status = 'awaiting_groups') AND t.type = 'multi_group'`
+        );
+
+        const combinedEvents = [...(tournaments as any[]), ...(trainings as any[])];
+        
+        // Ordenar por data
+        combinedEvents.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+        res.json(combinedEvents);
+    } catch (error: any) {
+        console.error("Erro ao buscar eventos ativos:", error);
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+// NOVA ROTA (Lógica #4 e #5) - Exportação Geral de Jogo de Aposta (Treino multi_group)
+app.get("/api/export/training/general/:trainingId", async (req: Request, res: Response, next: NextFunction) => {
+    const { trainingId } = req.params;
+    let connection;
+    try {
+        connection = await pool.getConnection();
+        
+        const [trainingInfo]: any[] = await connection.execute(
+            `SELECT t.id, t.date, c.name as courseName, c.id as courseId
+             FROM trainings t
+             JOIN courses c ON t.courseId = c.id
+             WHERE t.id = ? AND t.type = 'multi_group'`, [trainingId]
+        );
+        if (trainingInfo.length === 0) return res.status(404).send('Jogo de Aposta (multi-group) não encontrado.');
+        
+        const { date, courseName, courseId } = trainingInfo[0];
+        
+        const [holesResult]: any[] = await connection.execute(`SELECT id, holeNumber, par FROM holes WHERE courseId = ? ORDER BY holeNumber ASC`, [courseId]);
+        const holes: HoleQueryResult[] = holesResult as HoleQueryResult[];
+        for (const hole of holes) { 
+            const [tees] = await connection.execute("SELECT * FROM tees WHERE holeId = ?", [hole.id]); 
+            hole.tees = tees as TeeData[] ?? []; 
+        }
+        const courseData: CourseForScorecard = { holes, courseName, date };
+
+        const [groups]: any[] = await connection.execute("SELECT id FROM training_groups WHERE trainingId = ?", [trainingId]);
+        if (groups.length === 0) return res.status(404).send('Nenhum grupo encontrado para este jogo.');
+        
+        const groupIds = groups.map((g: { id: number }) => g.id);
+
+        const [participantsResult]: any[] = await connection.execute(
+            `SELECT DISTINCT p.id as playerId, p.fullName, p.gender, tp.courseHandicap
+             FROM training_participants tp
+             JOIN players p ON tp.playerId = p.id
+             WHERE tp.trainingGroupId IN (?) AND tp.invitationStatus = 'accepted'`, [groupIds]
+        );
+        const participants: ScorecardPlayer[] = participantsResult as ScorecardPlayer[];
+
+        const [allScoresResult]: any[] = await connection.execute(
+            `SELECT playerId, holeNumber, strokes
+             FROM training_scores WHERE trainingGroupId IN (?)`, [groupIds]
+        );
+        const allScores: ScoreQueryResult[] = allScoresResult as ScoreQueryResult[];
+
+        // Calcular Totais (apenas GROSS, como pedido para treinos)
+        for (const player of participants) {
+            player.id = player.playerId; 
+            const playerScores = allScores.filter(s => s.playerId === player.playerId);
+            player.scores = playerScores.map(s => ({ holeNumber: s.holeNumber, strokes: s.strokes }));
+            player.totalStrokes = playerScores.reduce((sum, s) => sum + (s.strokes || 0), 0);
+            
+            // Preencher dados "NET" como Gross para a função de exportação não falhar
+            player.netScore = player.totalStrokes; 
+            player.courseHandicap = player.courseHandicap ?? 0; // Usar o handicap se existir, ou 0
+            player.tieBreakReason = '';
+            player.tieBreakScores = { last9: 0, last6: 0, last3: 0, last1: 0 }; 
+        }
+
+        // Ordenar por GROSS
+        participants.sort((a, b) => (a.totalStrokes ?? 999) - (b.totalStrokes ?? 999));
+
+        // Gerar Excel
+        const workbook = new ExcelJS.Workbook();
+        const sheet = workbook.addWorksheet('Resultado Geral Gross');
+        const subtitle = `${courseName} - ${new Date(date).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}`;
+        
+        // Usar a sua função existente!
+        await buildHorizontalScorecard(sheet, `Resultado Geral - Jogo de Aposta`, subtitle, courseData, participants);
+
+        const fileName = `Relatorio_Geral_Treino_${trainingId}.xlsx`;
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
+        await workbook.xlsx.write(res);
+        res.end();
+
+    } catch (error: any) {
+        console.error("Erro ao exportar relatório geral de treino:", error);
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+
+app.get("/api/tournaments/:tournamentId/public", async (req: Request, res: Response, next: NextFunction) => {
     const { tournamentId } = req.params;
     let connection;
     try {
@@ -987,97 +1170,85 @@ app.get("/api/tournaments/:tournamentId/public", async (req: Request, res: Respo
             return res.status(404).json({ error: "Torneio não encontrado." });
         }
         res.json(rows[0]);
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro ao buscar detalhes públicos do torneio:", error);
-        res.status(500).json({ error: "Erro ao buscar detalhes do torneio." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/tournaments/:tournamentId/registrations", async (req: Request, res: Response) => {
+app.get("/api/tournaments/:tournamentId/registrations", async (req: Request, res: Response, next: NextFunction) => {
     const { tournamentId } = req.params;
     let connection;
-
     try {
         connection = await pool.getConnection();
-
         const query = `
             SELECT
-                tr.id,
-                tr.playerId as player_id,
-                tr.tournamentId as tournament_id,
-                tr.paymentStatus as payment_status,
-                tr.registrationDate as registration_date,
-                p.fullName,
-                p.email
+                tr.id, tr.playerId as player_id, tr.tournamentId as tournament_id,
+                tr.paymentStatus as payment_status, tr.registrationDate as registration_date,
+                p.fullName, p.email
             FROM tournament_registrations tr
             INNER JOIN players p ON tr.playerId = p.id
-            WHERE tr.tournamentId = ?
-            ORDER BY tr.registrationDate DESC
-        `;
-
+            WHERE tr.tournamentId = ? ORDER BY tr.registrationDate DESC`;
         const [rows] = await connection.execute(query, [tournamentId]);
-
         const formattedRegistrations = (rows as any[]).map(row => ({
-            id: row.id,
-            player_id: row.player_id,
-            tournament_id: row.tournament_id,
-            payment_status: row.payment_status,
-            registration_date: row.registration_date,
-            player: {
-                fullName: row.fullName,
-                email: row.email
-            }
+            id: row.id, player_id: row.player_id, tournament_id: row.tournament_id,
+            payment_status: row.payment_status, registration_date: row.registration_date,
+            player: { fullName: row.fullName, email: row.email }
         }));
-
         res.json(formattedRegistrations);
-
     } catch (error: any) {
         console.error('Erro ao buscar inscrições:', error);
-        res.status(500).json({ error: 'Erro ao buscar inscritos.' });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.patch("/api/registrations/:registrationId/status", async (req: Request, res: Response) => {
+app.patch("/api/registrations/:registrationId/status", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { registrationId } = req.params;
         const { status } = req.body;
-
         connection = await pool.getConnection();
         await connection.execute(
             "UPDATE tournament_registrations SET paymentStatus = ? WHERE id = ?",
             [status, registrationId]
         );
-
         res.status(200).json({ message: "Status atualizado!", newStatus: status });
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro ao atualizar pagamento:", error);
-        res.status(500).json({ error: "Erro ao atualizar." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.post("/api/tournaments/:tournamentId/register", async (req: Request, res: Response) => {
+app.post("/api/tournaments/:tournamentId/register", async (req: Request, res: Response, next: NextFunction) => {
     const { tournamentId } = req.params;
     const { playerId, answers } = req.body;
     let connection;
     try {
         connection = await pool.getConnection();
+
+        // CORREÇÃO: Converter IDs
+        const numericTournamentId = parseInt(tournamentId, 10);
+        const numericPlayerId = parseInt(playerId, 10);
+
         const [existing]: any = await connection.execute(
             "SELECT id FROM tournament_registrations WHERE playerId = ? AND tournamentId = ?",
-            [playerId, tournamentId]
+            [numericPlayerId, numericTournamentId]
         );
         if (existing.length > 0) {
             return res.status(409).json({ error: "Você já está inscrito neste torneio." });
         }
         const [result]: any = await connection.execute(
             "INSERT INTO tournament_registrations (playerId, tournamentId, paymentStatus) VALUES (?, ?, 'pending')",
-            [playerId, tournamentId]
+            [numericPlayerId, numericTournamentId]
         );
         const registrationId = result.insertId;
         if (answers && Array.isArray(answers) && answers.length > 0) {
@@ -1085,7 +1256,7 @@ app.post("/api/tournaments/:tournamentId/register", async (req: Request, res: Re
                 if (answer.questionId && answer.answerText) {
                     await connection.execute(
                         "INSERT INTO registration_answers (registrationId, questionId, answer) VALUES (?, ?, ?)",
-                        [registrationId, answer.questionId, answer.answerText]
+                        [registrationId, parseInt(answer.questionId, 10), answer.answerText]
                     );
                 }
             }
@@ -1096,53 +1267,43 @@ app.post("/api/tournaments/:tournamentId/register", async (req: Request, res: Re
             registrationId: registrationId
         });
     } catch (error: any) {
-        res.status(500).json({ error: "Erro interno ao realizar a inscrição." });
+        console.error("Erro interno ao realizar a inscrição:", error);
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/tournaments/:tournamentId/export-registrations", async (req: Request, res: Response) => {
+app.get("/api/tournaments/:tournamentId/export-registrations", async (req: Request, res: Response, next: NextFunction) => {
     const { tournamentId } = req.params;
     let connection;
-
     try {
         connection = await pool.getConnection();
         const query = `
         SELECT
-            tr.id as registration_id,
-            p.fullName as player_name,
-            p.email as player_email,
-            tr.paymentStatus,
-            tr.registrationDate,
-            tq.questionText,
-            ra.answer
+            tr.id as registration_id, p.fullName as player_name, p.email as player_email,
+            tr.paymentStatus, tr.registrationDate, tq.questionText, ra.answer
         FROM tournament_registrations tr
         INNER JOIN players p ON tr.playerId = p.id
         LEFT JOIN registration_answers ra ON tr.id = ra.registrationId
-        LEFT JOIN tournament_questions tq ON ra.questionId = q.id
+        LEFT JOIN tournament_questions tq ON ra.questionId = tq.id
         WHERE tr.tournamentId = ?
         ORDER BY tr.registrationDate DESC, p.fullName
         `;
-
         const [rows] = await connection.execute(query, [tournamentId]);
         const registrationsData = rows as any[];
-
         if (!registrationsData || registrationsData.length === 0) {
             return res.status(404).json({ error: 'Nenhuma inscrição encontrada para este torneio' });
         }
-
         const workbook = new ExcelJS.Workbook();
         const worksheet = workbook.addWorksheet('Inscritos');
-
         const registrationsMap = new Map();
         registrationsData.forEach((row: any) => {
             if (!registrationsMap.has(row.registration_id)) {
                 registrationsMap.set(row.registration_id, {
-                    player_name: row.player_name,
-                    player_email: row.player_email,
-                    payment_status: row.paymentStatus,
-                    registration_date: row.registrationDate,
+                    player_name: row.player_name, player_email: row.player_email,
+                    payment_status: row.paymentStatus, registration_date: row.registrationDate,
                     questions: {}
                 });
             }
@@ -1150,143 +1311,93 @@ app.get("/api/tournaments/:tournamentId/export-registrations", async (req: Reque
                 registrationsMap.get(row.registration_id).questions[row.questionText] = row.answer;
             }
         });
-
         const registrations = Array.from(registrationsMap.values());
         const headers = ['Nome', 'Email', 'Status Pagamento', 'Data Inscrição'];
         const questionHeadersSet = new Set<string>();
-        registrationsData.forEach((row: any) => {
-            if (row.questionText) {
-                questionHeadersSet.add(row.questionText);
-            }
-        });
-
-        const questionHeaders = Array.from(questionHeadersSet);
-        headers.push(...questionHeaders);
+        registrationsData.forEach((row: any) => { if (row.questionText) questionHeadersSet.add(row.questionText); });
+        const questionHeaders = Array.from(questionHeadersSet); headers.push(...questionHeaders);
         worksheet.addRow(headers);
-
         registrations.forEach((reg: any) => {
-            const row = [
-                reg.player_name,
-                reg.player_email,
-                reg.payment_status,
-                new Date(reg.registration_date).toLocaleDateString('pt-BR')
-            ];
-
-            questionHeaders.forEach((question: string) => {
-                row.push(reg.questions[question] || "");
-            });
-
+            const row = [ reg.player_name, reg.player_email, reg.payment_status, new Date(reg.registration_date).toLocaleDateString('pt-BR') ];
+            questionHeaders.forEach((question: string) => { row.push(reg.questions[question] || ""); });
             worksheet.addRow(row);
         });
-
         worksheet.getRow(1).font = { bold: true };
-        worksheet.getRow(1).fill = {
-            type: 'pattern',
-            pattern: 'solid',
-            fgColor: { argb: 'FFE6E6FA' }
-        };
-
-        worksheet.columns.forEach((column: any) => {
-            let maxLength = 0;
-            column.eachCell({ includeEmpty: true }, (cell: any) => {
-                const columnLength = cell.value ? cell.value.toString().length : 10;
-                if (columnLength > maxLength) {
-                    maxLength = columnLength;
-                }
-            });
-            column.width = maxLength < 10 ? 10 : maxLength;
-        });
-
+        worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE6E6FA' } };
+        worksheet.columns.forEach((column: any) => { /* ... ajuste largura ... */ });
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.setHeader('Content-Disposition', `attachment; filename=inscritos_torneio_${tournamentId}.xlsx`);
-
         await workbook.xlsx.write(res);
         res.end();
-
     } catch (error: unknown) {
         console.error('Erro na exportação:', error);
-        const errorMessage = error instanceof Error ? error.message : 'Erro desconhecido';
-        res.status(500).json({
-            error: 'Erro interno do servidor ao exportar inscrições',
-            details: errorMessage
-        });
-    } finally {
-        if (connection) {
-            connection.release();
-        }
-    }
-});
-
-app.post("/api/trainings/groups/:groupId/invite", async (req: Request, res: Response) => {
-  const { groupId } = req.params;
-  const { playerIds } = req.body;
-  let connection;
-
-  if (!playerIds || !Array.isArray(playerIds) || playerIds.length === 0) {
-    return res.status(400).json({ error: "É necessário fornecer os IDs dos jogadores a convidar." });
-  }
-
-  try {
-    connection = await pool.getConnection();
-    const values = playerIds.map(playerId => [parseInt(groupId), playerId, 'pending']);
-    await connection.query("INSERT IGNORE INTO training_participants (trainingGroupId, playerId, invitationStatus) VALUES ?", [values]);
-    res.status(200).json({ message: "Convites enviados com sucesso." });
-  } catch (error) {
-    res.status(500).json({ error: "Erro interno ao enviar convites."});
-  } finally {
-    if (connection) connection.release();
-  }
-});
-
-app.patch("/api/trainings/invitations/:participantId", async (req: Request, res: Response) => {
-    const { participantId } = req.params;
-    const { status } = req.body;
-    if (!status || !['accepted', 'declined'].includes(status)) {
-        return res.status(400).json({ error: "Status inválido." });
-    }
-    let connection;
-    try {
-        connection = await pool.getConnection();
-        await connection.execute(
-            "UPDATE training_participants SET invitationStatus = ? WHERE id = ?",
-            [status, participantId]
-        );
-        res.status(200).json({ message: `Convite ${status === 'accepted' ? 'aceite' : 'recusado'} com sucesso.` });
-    } catch (error) {
-        console.error("Error ao responder ao convite:", error);
-        res.status(500).json({ error: "Error interno ao responder ao convite." });
+        next(error);
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/users/:userId/invitations", async (req: Request, res: Response) => {
-  const { userId } = req.params;
+app.post("/api/trainings/groups/:groupId/invite", async (req: Request, res: Response, next: NextFunction) => {
+  const { groupId } = req.params;
+  const { playerIds } = req.body;
   let connection;
   try {
+    if (!playerIds || !Array.isArray(playerIds) || playerIds.length === 0) return res.status(400).json({ error: "É necessário fornecer os IDs dos jogadores a convidar." });
     connection = await pool.getConnection();
-    const [invites] = await connection.execute(
-      `SELECT
-        tp.id as invitationId, p.fullName as inviterName, c.name as courseName, t.date
-      FROM training_participants tp
-      JOIN training_groups tg ON tp.trainingGroupId = tg.id
-      JOIN trainings t ON tg.trainingId = t.id
-      JOIN players p ON t.creatorId = p.id
-      JOIN courses c ON t.courseId = c.id
-      WHERE tp.playerId = ? AND tp.invitationStatus = 'pending'
-      ORDER BY t.date DESC`,
-      [userId]
-    );
-    res.json(invites);
-  } catch (error) {
-    console.error("Erro ao buscar convites:", error);
-    res.status(500).json({ error: "Erro ao buscar convites."});
+    const values = playerIds.map(playerId => [parseInt(groupId), parseInt(playerId, 10), 'pending']); // CORREÇÃO: parseInt
+    await connection.query("INSERT IGNORE INTO training_participants (trainingGroupId, playerId, invitationStatus) VALUES ?", [values]);
+    res.status(200).json({ message: "Convites enviados com sucesso." });
+  } catch (error: any) {
+    console.error("Erro interno ao enviar convites:", error);
+    const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+    res.status(500).json({ error: errorMessage });
   } finally {
     if (connection) connection.release();
   }
 });
 
-app.get("/api/trainings/scorecard/:accessCode", async (req: Request, res: Response) => {
+app.patch("/api/trainings/invitations/:participantId", async (req: Request, res: Response, next: NextFunction) => {
+    const { participantId } = req.params;
+    const { status } = req.body;
+    let connection;
+    try {
+        if (!status || !['accepted', 'declined'].includes(status)) return res.status(400).json({ error: "Status inválido." });
+        connection = await pool.getConnection();
+        await connection.execute( "UPDATE training_participants SET invitationStatus = ? WHERE id = ?", [status, participantId] );
+        res.status(200).json({ message: `Convite ${status === 'accepted' ? 'aceite' : 'recusado'} com sucesso.` });
+    } catch (error: any) {
+        console.error("Erro ao responder ao convite:", error);
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+app.get("/api/users/:userId/invitations", async (req: Request, res: Response, next: NextFunction) => {
+  const { userId } = req.params;
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    const [invites] = await connection.execute(
+      `SELECT tp.id as invitationId, p.fullName as inviterName, c.name as courseName, t.date
+       FROM training_participants tp JOIN training_groups tg ON tp.trainingGroupId = tg.id
+       JOIN trainings t ON tg.trainingId = t.id JOIN players p ON t.creatorId = p.id
+       JOIN courses c ON t.courseId = c.id
+       WHERE tp.playerId = ? AND tp.invitationStatus = 'pending' ORDER BY t.date DESC`,
+      [userId]
+    );
+    res.json(invites);
+  } catch (error: any) {
+    console.error("Erro ao buscar convites:", error);
+    const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+    res.status(500).json({ error: errorMessage });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+app.get("/api/trainings/scorecard/:accessCode", async (req: Request, res: Response, next: NextFunction) => {
   let connection;
   try {
     const { accessCode } = req.params;
@@ -1295,75 +1406,68 @@ app.get("/api/trainings/scorecard/:accessCode", async (req: Request, res: Respon
 
     connection = await pool.getConnection();
     const [groupDetails]: any[] = await connection.execute(
-      `SELECT
-        tg.id as groupId, tg.startHole, t.id as trainingId,
-        c.name as courseName, c.id as courseId, t.status
-      FROM training_groups tg
-      JOIN trainings t ON tg.trainingId = t.id
-      JOIN courses c ON t.courseId = c.id
-      WHERE tg.accessCode = ?`, [accessCode]
+      `SELECT tg.id as groupId, tg.startHole, t.id as trainingId,
+              c.name as courseName, c.id as courseId, t.status
+       FROM training_groups tg JOIN trainings t ON tg.trainingId = t.id
+       JOIN courses c ON t.courseId = c.id WHERE tg.accessCode = ?`, [accessCode]
     );
-
     if (groupDetails.length === 0) return res.status(404).json({ error: "Código de acesso de treino inválido." });
 
-    const group = groupDetails[0];
-    group.tournamentName = "Sessão de Treino";
-
+    const group = groupDetails[0]; group.tournamentName = "Sessão de Treino";
     const [players] = await connection.execute(
-      `SELECT p.id, p.fullName, tp.teeColor
-       FROM training_participants tp JOIN players p ON tp.playerId = p.id
+      `SELECT p.id, p.fullName, tp.teeColor FROM training_participants tp JOIN players p ON tp.playerId = p.id
        WHERE tp.trainingGroupId = ? AND tp.invitationStatus = 'accepted'`, [group.groupId]
-    );
-    group.players = players;
-
-    const [scores] = await connection.execute("SELECT playerId, holeNumber, strokes FROM training_scores WHERE trainingGroupId = ?", [group.groupId]);
-    group.scores = scores;
-
+    ); group.players = players;
+    const [scores] = await connection.execute("SELECT playerId, holeNumber, strokes FROM training_scores WHERE trainingGroupId = ?", [group.groupId]); group.scores = scores;
     const [holes]: any[] = await connection.execute("SELECT id, courseId, holeNumber, par, aerialImageUrl FROM holes WHERE courseId = ? ORDER BY holeNumber", [group.courseId]);
-    for (const hole of holes) {
-      const [tees] = await connection.execute("SELECT * FROM tees WHERE holeId = ?", [hole.id]);
-      hole.tees = tees;
-    }
-    group.holes = holes;
-
+    for (const hole of holes) { const [tees] = await connection.execute("SELECT * FROM tees WHERE holeId = ?", [hole.id]); hole.tees = tees; } group.holes = holes;
     res.json(group);
-
-  } catch (error) {
+  } catch (error: any) {
     console.error("Erro ao buscar dados do scorecard de treino:", error);
-    res.status(500).json({ error: "Erro ao buscar dados do scorecard de treino."});
+    const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+    res.status(500).json({ error: errorMessage });
   } finally {
     if (connection) connection.release();
   }
 });
 
-app.post("/api/training_scores/hole", async (req: Request, res: Response) => {
+app.post("/api/training_scores/hole", async (req: Request, res: Response, next: NextFunction) => {
   const { groupId, holeNumber, scores } = req.body;
   let connection;
-  if (!groupId || !holeNumber || !scores || !Array.isArray(scores)) return res.status(400).json({ error: "Dados incompletos ou em formato inválido." });
-
   try {
+    if (!groupId || !holeNumber || !scores || !Array.isArray(scores)) return res.status(400).json({ error: "Dados incompletos ou em formato inválido." });
+    
+    const numericGroupId = parseInt(groupId, 10);
+    const numericHoleNumber = parseInt(holeNumber, 10);
+
     connection = await pool.getConnection();
     await connection.beginTransaction();
-
     for (const score of scores as { playerId: number, strokes: number }[]) {
       if (score.strokes === null || score.strokes === undefined) continue;
+      
+      const numericPlayerId = parseInt(score.playerId as any, 10);
+      const numericStrokes = parseInt(score.strokes as any, 10);
+
+      if(isNaN(numericPlayerId) || isNaN(numericStrokes)) continue; 
+
       await connection.execute(
         `INSERT INTO training_scores (trainingGroupId, playerId, holeNumber, strokes) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE strokes = ?`,
-        [groupId, score.playerId, holeNumber, score.strokes, score.strokes]
+        [numericGroupId, numericPlayerId, numericHoleNumber, numericStrokes, numericStrokes]
       );
     }
     await connection.commit();
     res.status(200).json({ message: "Pontuações do treino salvas com sucesso."});
-  } catch (error) {
+  } catch (error: any) {
     if (connection) await connection.rollback();
     console.error("Erro ao salvar pontuações do treino:", error);
-    res.status(500).json({ error: "Erro no servidor ao salvar pontuações."});
+    const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+    res.status(500).json({ error: errorMessage });
   } finally {
     if (connection) connection.release();
   }
 });
 
-app.post("/api/trainings/finish", async (req: Request, res: Response) => {
+app.post("/api/trainings/finish", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { groupId } = req.body;
@@ -1374,178 +1478,157 @@ app.post("/api/trainings/finish", async (req: Request, res: Response) => {
             [groupId]
         );
         res.status(200).json({ success: true, message: "Treino finalizado e adicionado ao histórico!" });
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro ao finalizar treino:", error);
-        res.status(500).json({ success: false, error: "Erro ao finalizar treino." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/trainings/history/:trainingGroupId/player/:playerId", async (req: Request, res: Response) => {
+app.get("/api/trainings/history/:trainingGroupId/player/:playerId", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { playerId, trainingGroupId } = req.params;
         connection = await pool.getConnection();
         const [results]: any[] = await connection.execute(
             `SELECT ts.holeNumber, ts.strokes, h.par, tee.yardage
-             FROM training_scores ts
-             JOIN training_groups tg ON ts.trainingGroupId = tg.id
+             FROM training_scores ts JOIN training_groups tg ON ts.trainingGroupId = tg.id
              JOIN trainings t ON tg.trainingId = t.id
              JOIN holes h ON ts.holeNumber = h.holeNumber AND t.courseId = h.courseId
-             JOIN training_participants tp ON tg.id = tp.trainingGroupId AND ts.playerId = ts.playerId
+             JOIN training_participants tp ON tg.id = tp.trainingGroupId AND ts.playerId = tp.playerId 
              LEFT JOIN tees tee ON h.id = tee.holeId AND tp.teeColor = tee.color
-             WHERE ts.playerId = ? AND ts.trainingGroupId = ?
-             ORDER BY ts.holeNumber`,
+             WHERE ts.playerId = ? AND ts.trainingGroupId = ? ORDER BY ts.holeNumber`,
             [playerId, trainingGroupId]
         );
         res.json(results);
-    } catch (error) {
-        console.error("Error as buscar detalhes do treino:", error);
-        res.status(500).json({ error: "Error as buscar detalhes do treino." });
+    } catch (error: any) {
+        console.error("Erro ao buscar detalhes do treino:", error);
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/players/search", async (req: Request, res: Response) => {
+app.get("/api/players/search", async (req: Request, res: Response, next: NextFunction) => {
   const { search, excludeTrainingGroup } = req.query;
   let connection;
   try {
     connection = await pool.getConnection();
-    let query = `
-      SELECT p.id, p.fullName, p.email, p.gender FROM players p
-      WHERE p.role != 'admin'`;
+    let query = `SELECT p.id, p.fullName, p.email, p.gender FROM players p WHERE p.role != 'admin'`;
     const params: any[] = [];
-
-    if (search) {
-      query += " AND p.fullName LIKE ?";
-      params.push(`%${search}%`);
-    }
-
-    if (excludeTrainingGroup) {
-      query += ` AND p.id NOT IN (
-        SELECT tp.playerId FROM training_participants tp
-        WHERE tp.trainingGroupId = ?)`;
-      params.push(excludeTrainingGroup);
-    }
-
+    if (search) { query += " AND p.fullName LIKE ?"; params.push(`%${search}%`); }
+    if (excludeTrainingGroup) { query += ` AND p.id NOT IN (SELECT tp.playerId FROM training_participants tp WHERE tp.trainingGroupId = ?)`; params.push(excludeTrainingGroup); }
     query += " ORDER BY p.fullName ASC LIMIT 20";
     const [players] = await connection.execute(query, params);
     res.json(players);
-  } catch (error) {
+  } catch (error: any) {
     console.error("Erro ao buscar jogadores:", error);
-    res.status(500).json({ error: "Erro ao buscar jogadores"});
+    const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+    res.status(500).json({ error: errorMessage });
   } finally {
     if (connection) connection.release();
   }
 });
 
-app.delete("/api/tournaments/:id", async (req: Request, res: Response) => {
+app.delete("/api/tournaments/:id", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { id } = req.params;
         connection = await pool.getConnection();
         await connection.execute("DELETE FROM tournaments WHERE id = ?", [id]);
         res.status(200).json({ message: "Torneio apagado com sucesso." });
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro ao apagar torneio:", error);
-        res.status(500).json({ error: "Erro ao apagar torneio." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.put("/api/tournaments/:id", async (req: Request, res: Response) => {
+app.put("/api/tournaments/:id", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { id } = req.params;
-        const { bannerImageUrl, paymentInstructions } = req.body;
+        const { bannerImageUrl, paymentInstructions, categories } = req.body;
         connection = await pool.getConnection();
+        await connection.beginTransaction();
         await connection.execute(
-            `UPDATE tournaments
-             SET bannerImageUrl = ?, paymentInstructions = ?
-             WHERE id = ?`,
+            `UPDATE tournaments SET bannerImageUrl = ?, paymentInstructions = ? WHERE id = ?`,
             [bannerImageUrl, paymentInstructions, id]
         );
+        await connection.execute("DELETE FROM tournament_categories WHERE tournamentId = ?", [id]);
+        if (categories && Array.isArray(categories) && categories.length > 0) {
+            const categoryQuery = "INSERT INTO tournament_categories (tournamentId, name) VALUES ?";
+            const categoryValues = categories.map((catName: string) => [id, catName]);
+            await connection.query(categoryQuery, [categoryValues]);
+        }
+        await connection.commit();
         res.status(200).json({ message: "Configurações do torneio atualizadas com sucesso." });
-    } catch (error) {
+    } catch (error: any) {
+        if (connection) await connection.rollback();
         console.error("Erro ao atualizar configurações do torneio:", error);
-        res.status(500).json({ error: "Erro ao atualizar as configurações do torneio." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.post("/api/tournaments/:id/finish", async (req: Request, res: Response) => {
+app.post("/api/tournaments/:id/finish", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { id } = req.params;
         connection = await pool.getConnection();
-        await connection.execute(
-            "UPDATE tournaments SET status = 'completed', finishedAt = NOW() WHERE id = ?",
-            [id]
-        );
+        await connection.execute( "UPDATE tournaments SET status = 'completed', finishedAt = NOW() WHERE id = ?", [id] );
         res.status(200).json({ success: true, message: "Torneio finalizado e movido para o histórico!" });
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro ao finalizar torneio:", error);
-        res.status(500).json({ success: false, error: "Erro ao finalizar torneio." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-
-app.get("/api/tournaments/:tournamentId/tees", async (req: Request, res: Response) => {
+app.get("/api/tournaments/:tournamentId/tees", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { tournamentId } = req.params;
         connection = await pool.getConnection();
         const [rows] = await connection.execute(
-            `SELECT DISTINCT t.color
-             FROM tees t
-             JOIN holes h ON t.holeId = h.id
-             JOIN courses c ON h.courseId = c.id
-             JOIN tournaments tour ON c.id = tour.courseId
-             WHERE tour.id = ?`,
-            [tournamentId]
-        );
+            `SELECT DISTINCT t.color FROM tees t JOIN holes h ON t.holeId = h.id
+             JOIN courses c ON h.courseId = c.id JOIN tournaments tour ON c.id = tour.courseId
+             WHERE tour.id = ?`, [tournamentId] );
         res.json(rows);
-    } catch (error) {
-        console.error("Error ao buscar tees do torneio:", error);
-        res.status(500).json({ error: "Error ao buscar tees." });
+    } catch (error: any) {
+        console.error("Erro ao buscar tees do torneio:", error);
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/tournaments/:tournamentId/export-groups", async (req: Request, res: Response) => {
+app.get("/api/tournaments/:tournamentId/export-groups", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { tournamentId } = req.params;
         connection = await pool.getConnection();
-        const [tournamentRows]: any[] = await connection.execute(
-            "SELECT name, date, startTime FROM tournaments WHERE id = ?",
-            [tournamentId]
-        );
-        if (tournamentRows.length === 0) {
-            return res.status(404).json({ error: "Torneio não encontrado." });
-        }
+        const [tournamentRows]: any[] = await connection.execute( "SELECT name, date, startTime FROM tournaments WHERE id = ?", [tournamentId] );
+        if (tournamentRows.length === 0) return res.status(404).json({ error: "Torneio não encontrado." });
         const tournament = tournamentRows[0];
         const TEE_TIME_INTERVAL = 10;
         const [groupRows]: any[] = await connection.execute(
             `SELECT g.id as groupId, g.startHole, g.accessCode, p.fullName
-             FROM \`groups\` g
-             JOIN group_players gp ON g.id = gp.groupId
-             JOIN players p ON gp.playerId = p.id
-             WHERE g.tournamentId = ?
-             ORDER BY g.startHole, g.id, p.fullName`,
-            [tournamentId]
-        );
-        if (groupRows.length === 0) {
-            return res.status(404).json({ error: "Nenhum grupo encontrado para este torneio." });
-        }
-        const groupsByHole = groupRows.reduce((acc: any, row: any) => {
+             FROM \`groups\` g JOIN group_players gp ON g.id = gp.groupId JOIN players p ON gp.playerId = p.id
+             WHERE g.tournamentId = ? ORDER BY g.startHole, g.id, p.fullName`, [tournamentId] );
+        if (groupRows.length === 0) return res.status(404).json({ error: "Nenhum grupo encontrado para este torneio." });
+        
+        const groupsByHole = groupRows.reduce((acc: Record<string, Map<number, any>>, row: any) => {
             const { startHole, groupId, ...playerData } = row;
             if (!acc[startHole]) acc[startHole] = new Map();
             if (!acc[startHole].has(groupId)) {
@@ -1553,9 +1636,9 @@ app.get("/api/tournaments/:tournamentId/export-groups", async (req: Request, res
             }
             acc[startHole].get(groupId).players.push(playerData.fullName);
             return acc;
-        }, {} as Record<string, Map<number, any>>);
-        const workbook = new ExcelJS.Workbook();
-        workbook.creator = "Birdify";
+        }, {});
+
+        const workbook = new ExcelJS.Workbook(); workbook.creator = "Birdify";
         const sheet = workbook.addWorksheet("Horários de Saída");
         sheet.mergeCells("A1:D1");
         const titleCell = sheet.getCell("A1");
@@ -1563,22 +1646,16 @@ app.get("/api/tournaments/:tournamentId/export-groups", async (req: Request, res
         titleCell.font = { name: "Calibri", size: 16, bold: true };
         titleCell.alignment = { vertical: "middle", horizontal: "center" };
         let currentRow = 3;
-        for (const hole in groupsByHole) {
+        
+        const sortedHoles = Object.keys(groupsByHole).sort((a, b) => parseInt(a) - parseInt(b));
+
+        for (const hole of sortedHoles) {
             const groups = Array.from(groupsByHole[hole].values());
             sheet.mergeCells(`A${currentRow}:D${currentRow}`);
             const teeTitleCell = sheet.getCell(`A${currentRow}`);
             teeTitleCell.value = `HORÁRIO DE SAÍDA - TEE ${hole}`;
-            teeTitleCell.font = {
-                name: "Calibri",
-                size: 12,
-                bold: true,
-                color: { argb: "FFFFFFFF" },
-            };
-            teeTitleCell.fill = {
-                type: "pattern",
-                pattern: "solid",
-                fgColor: { argb: "FF4F81BD" },
-            };
+            teeTitleCell.font = { name: "Calibri", size: 12, bold: true, color: { argb: "FFFFFFFF" } };
+            teeTitleCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF4F81BD" } };
             teeTitleCell.alignment = { vertical: "middle", horizontal: "center" };
             currentRow++;
             const headerRow = sheet.addRow(["HORA", "MATCH", "JOGADORES", "CÓDIGO"]);
@@ -1586,19 +1663,15 @@ app.get("/api/tournaments/:tournamentId/export-groups", async (req: Request, res
             headerRow.alignment = { vertical: "middle", horizontal: "center" };
             currentRow++;
             let matchNumber = 1;
-            let teeTime = new Date(`${tournament.date.toISOString().split("T")[0]} ${tournament.startTime || "08:00:00"}`);
+            const teeTimeStr = `${tournament.date.toISOString().split("T")[0]}T${tournament.startTime || "08:00:00"}-03:00`;
+            let teeTime = new Date(teeTimeStr);
+
             groups.forEach((group: any) => {
-                const formattedTime = teeTime.toLocaleTimeString("pt-BR", {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                });
+                const formattedTime = teeTime.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" });
                 const startRow = currentRow;
                 group.players.forEach((playerName: string, index: number) => {
-                    if (index == 0) {
-                        sheet.addRow([formattedTime, matchNumber, playerName, group.accessCode]);
-                    } else {
-                        sheet.addRow(["", "", playerName, ""]);
-                    }
+                    if (index == 0) sheet.addRow([formattedTime, matchNumber, playerName, group.accessCode]);
+                    else sheet.addRow(["", "", playerName, ""]);
                 });
                 const endRow = currentRow + group.players.length - 1;
                 if (group.players.length > 1) {
@@ -1615,7 +1688,7 @@ app.get("/api/tournaments/:tournamentId/export-groups", async (req: Request, res
             });
             currentRow++;
         }
-        sheet.columns.forEach((column) => {
+        sheet.columns.forEach((column: any) => { 
             let maxLength = 0;
             column.eachCell!({ includeEmpty: true }, (cell) => {
                 let columnLength = cell.value ? cell.value.toString().length : 10;
@@ -1623,389 +1696,229 @@ app.get("/api/tournaments/:tournamentId/export-groups", async (req: Request, res
                     maxLength = columnLength;
                 }
             });
-            column.width = maxLength < 10 ? 10 : maxLength;
-        });
+            column.width = maxLength < 10 ? 10 : maxLength + 2;
+         });
         res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         res.setHeader("Content-Disposition", "attachment; filename=Horarios_de_Saida.xlsx");
-        await workbook.xlsx.write(res);
-        res.end();
-    } catch (error) {
-        console.error("Error as exportar grupos:", error);
-        res.status(500).json({ error: "Error as exportar grupos." });
+        await workbook.xlsx.write(res); res.end();
+    } catch (error: any) {
+        console.error("Erro ao exportar grupos:", error);
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/players", async (req: Request, res: Response) => {
+app.get("/api/players", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { tournamentId, modality } = req.query;
         connection = await pool.getConnection();
         let params: any[] = [];
         let query = "SELECT id, fullName, gender FROM players WHERE role != 'admin'";
-        if (modality) {
-            query += " AND modality = ?";
-            params.push(modality);
-        }
+        if (modality) { query += " AND modality = ?"; params.push(modality); }
         if (tournamentId) {
-            query += ` AND id NOT IN (
-                SELECT gp.playerId FROM group_players gp
-                JOIN \`groups\` g ON gp.groupId = g.id
-                WHERE g.tournamentId = ?
-            )`;
+            query += ` AND id NOT IN ( SELECT gp.playerId FROM group_players gp JOIN \`groups\` g ON gp.groupId = g.id WHERE g.tournamentId = ? )`;
             params.push(tournamentId);
         }
         query += " ORDER BY fullName";
         const [rows] = await connection.execute(query, params);
         res.json(rows);
-    } catch (error) {
-        console.error("Error as buscar jogadores:", error);
-        res.status(500).json({ error: "Error as buscar jogadores" });
+    } catch (error: any) {
+        console.error("Erro ao buscar jogadores:", error);
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.post("/api/players", async (req: Request, res: Response) => {
+app.post("/api/players", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { fullName, email, password, gender, club } = req.body;
-        if (!fullName || !email || !password || !gender) {
-            return res.status(400).json({ error: "Campos essenciais em falta." });
-        }
-
-        const saltRounds = 10;
-        const hashedPassword = await bcrypt.hash(password, saltRounds);
-        const modality = 'Golf'; // Modalidade fixada
-
+        if (!fullName || !email || !password || !gender) return res.status(400).json({ error: "Campos essenciais em falta." });
+        const saltRounds = 10; const hashedPassword = await bcrypt.hash(password, saltRounds);
+        const modality = 'Golf'; 
         connection = await pool.getConnection();
         const query = `INSERT INTO players (fullName, email, password, gender, modality, club) VALUES (?, ?, ?, ?, ?, ?)`;
-        const [result]: any = await connection.execute(query, [
-            fullName, email, hashedPassword, gender, modality, club || null,
-        ]);
+        const [result]: any = await connection.execute(query, [ fullName, email, hashedPassword, gender, modality, club || null ]);
         res.status(201).json({ success: true, id: result.insertId });
     } catch (error: any) {
-        console.error("Error ao cadastrar jogador:", error);
-        if (error.code === "ER_DUP_ENTRY") {
-            return res.status(409).json({ error: "O Email fornecido já está em uso." });
-        }
-        res.status(500).json({ error: "Erro ao cadastrar jogador." });
+        console.error("Erro ao cadastrar jogador:", error);
+        if (error.code === "ER_DUP_ENTRY") return res.status(409).json({ error: "O Email fornecido já está em uso." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/tournaments/:tournamentId/groups", async (req: Request, res: Response) => {
+app.get("/api/tournaments/:tournamentId/groups", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { tournamentId } = req.params;
         connection = await pool.getConnection();
-        const [groups]: any[] = await connection.execute(
-            "SELECT * FROM `groups` WHERE tournamentId = ?",
-            [tournamentId]
-        );
+        const [groups]: any[] = await connection.execute( "SELECT * FROM `groups` WHERE tournamentId = ?", [tournamentId] );
         for (const group of groups) {
-            const [players] = await connection.execute(
-                `SELECT p.id as playerId, p.fullName, p.gender, gp.isResponsible, gp.teeColor
-                 FROM group_players gp
-                 JOIN players p ON gp.playerId = p.id
-                 WHERE gp.groupId = ?`,
-                [group.id]
-            );
+            const [players] = await connection.execute( `SELECT p.id as playerId, p.fullName, p.gender, gp.isResponsible, gp.teeColor FROM group_players gp JOIN players p ON gp.playerId = p.id WHERE gp.groupId = ?`, [group.id] );
             group.players = players;
         }
         res.json(groups);
-    } catch (error) {
-        console.error("Error as a buscar grupos:", error);
-        res.status(500).json({ error: "Error as a buscar grupos do torneio" });
+    } catch (error: any) {
+        console.error("Erro ao buscar grupos:", error);
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.post("/api/groups", async (req: Request, res: Response) => {
+app.post("/api/groups", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { tournamentId, startHole, players, responsiblePlayerId } = req.body;
-        const accessCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+        
+        // CORREÇÃO: Converter IDs
+        const numericTournamentId = parseInt(tournamentId, 10);
+        const numericStartHole = parseInt(startHole, 10);
+        const numericResponsiblePlayerId = parseInt(responsiblePlayerId, 10);
 
+        const accessCode = Math.random().toString(36).substring(2, 8).toUpperCase();
         connection = await pool.getConnection();
         await connection.beginTransaction();
-
-        const [groupResult]: any = await connection.execute(
-            "INSERT INTO `groups` (tournamentId, startHole, accessCode) VALUES (?, ?, ?)",
-            [tournamentId, startHole, accessCode]
-        );
+        const [groupResult]: any = await connection.execute( "INSERT INTO `groups` (tournamentId, startHole, accessCode) VALUES (?, ?, ?)", [numericTournamentId, numericStartHole, accessCode] );
         const newGroupId = groupResult.insertId;
-
         for (const player of players) {
-            await connection.execute(
-                "INSERT INTO group_players (groupId, playerId, isResponsible, teeColor) VALUES (?, ?, ?, ?)",
-                [newGroupId, player.id, player.id === responsiblePlayerId, player.teeColor]
-            );
+            const numericPlayerId = parseInt(player.id, 10);
+            await connection.execute( "INSERT INTO group_players (groupId, playerId, isResponsible, teeColor) VALUES (?, ?, ?, ?)", [newGroupId, numericPlayerId, numericPlayerId === numericResponsiblePlayerId, player.teeColor] );
         }
         await connection.commit();
         res.status(201).json({ success: true, message: "Grupo criado com sucesso!", accessCode });
-    } catch (error) {
+    } catch (error: any) {
         if (connection) await connection.rollback();
         console.error("ERRO DETALHADO AO CRIAR GRUPO:", error);
-        res.status(500).json({ success: false, error: "Erro ao criar o grupo no servidor." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/tournaments/:tournamentId/export-groups", async (req: Request, res: Response) => {
-    let connection;
-    try {
-        const { tournamentId } = req.params;
-        connection = await pool.getConnection();
-        const [tournamentRows]: any[] = await connection.execute(
-            "SELECT name, date, startTime FROM tournaments WHERE id = ?",
-            [tournamentId]
-        );
-        if (tournamentRows.length === 0) {
-            return res.status(404).json({ error: "Torneio não encontrado." });
-        }
-        const tournament = tournamentRows[0];
-        const TEE_TIME_INTERVAL = 10;
-        const [groupRows]: any[] = await connection.execute(
-            `SELECT g.id as groupId, g.startHole, g.accessCode, p.fullName
-             FROM \`groups\` g
-             JOIN group_players gp ON g.id = gp.groupId
-             JOIN players p ON gp.playerId = p.id
-             WHERE g.tournamentId = ?
-             ORDER BY g.startHole, g.id, p.fullName`,
-            [tournamentId]
-        );
-        if (groupRows.length === 0) {
-            return res.status(404).json({ error: "Nenhum grupo encontrado para este torneio." });
-        }
-        const groupsByHole = groupRows.reduce((acc: any, row: any) => {
-            const { startHole, groupId, ...playerData } = row;
-            if (!acc[startHole]) acc[startHole] = new Map();
-            if (!acc[startHole].has(groupId)) {
-                acc[startHole].set(groupId, { ...playerData, players: [] });
-            }
-            acc[startHole].get(groupId).players.push(playerData.fullName);
-            return acc;
-        }, {} as Record<string, Map<number, any>>);
-        const workbook = new ExcelJS.Workbook();
-        workbook.creator = "Birdify";
-        const sheet = workbook.addWorksheet("Horários de Saída");
-        sheet.mergeCells("A1:D1");
-        const titleCell = sheet.getCell("A1");
-        titleCell.value = tournament.name.toUpperCase();
-        titleCell.font = { name: "Calibri", size: 16, bold: true };
-        titleCell.alignment = { vertical: "middle", horizontal: "center" };
-        let currentRow = 3;
-        for (const hole in groupsByHole) {
-            const groups = Array.from(groupsByHole[hole].values());
-            sheet.mergeCells(`A${currentRow}:D${currentRow}`);
-            const teeTitleCell = sheet.getCell(`A${currentRow}`);
-            teeTitleCell.value = `HORÁRIO DE SAÍDA - TEE ${hole}`;
-            teeTitleCell.font = {
-                name: "Calibri",
-                size: 12,
-                bold: true,
-                color: { argb: "FFFFFFFF" },
-            };
-            teeTitleCell.fill = {
-                type: "pattern",
-                pattern: "solid",
-                fgColor: { argb: "FF4F81BD" },
-            };
-            teeTitleCell.alignment = { vertical: "middle", horizontal: "center" };
-            currentRow++;
-            const headerRow = sheet.addRow(["HORA", "MATCH", "JOGADORES", "CÓDIGO"]);
-            headerRow.font = { bold: true };
-            headerRow.alignment = { vertical: "middle", horizontal: "center" };
-            currentRow++;
-            let matchNumber = 1;
-            let teeTime = new Date(`${tournament.date.toISOString().split("T")[0]} ${tournament.startTime || "08:00:00"}`);
-            groups.forEach((group: any) => {
-                const formattedTime = teeTime.toLocaleTimeString("pt-BR", {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                });
-                const startRow = currentRow;
-                group.players.forEach((playerName: string, index: number) => {
-                    if (index == 0) {
-                        sheet.addRow([formattedTime, matchNumber, playerName, group.accessCode]);
-                    } else {
-                        sheet.addRow(["", "", playerName, ""]);
-                    }
-                });
-                const endRow = currentRow + group.players.length - 1;
-                if (group.players.length > 1) {
-                    sheet.mergeCells(`A${startRow}:A${endRow}`);
-                    sheet.mergeCells(`B${startRow}:B${endRow}`);
-                    sheet.mergeCells(`D${startRow}:D${endRow}`);
-                }
-                sheet.getCell(`A${startRow}`).alignment = { vertical: "middle", horizontal: "center" };
-                sheet.getCell(`B${startRow}`).alignment = { vertical: "middle", horizontal: "center" };
-                sheet.getCell(`D${startRow}`).alignment = { vertical: "middle", horizontal: "center" };
-                currentRow = endRow + 1;
-                matchNumber++;
-                teeTime.setMinutes(teeTime.getMinutes() + TEE_TIME_INTERVAL);
-            });
-            currentRow++;
-        }
-        sheet.columns.forEach((column) => {
-            let maxLength = 0;
-            column.eachCell!({ includeEmpty: true }, (cell) => {
-                let columnLength = cell.value ? cell.value.toString().length : 10;
-                if (columnLength > maxLength) {
-                    maxLength = columnLength;
-                }
-            });
-            column.width = maxLength < 10 ? 10 : maxLength;
-        });
-        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-        res.setHeader("Content-Disposition", "attachment; filename=Horarios_de_Saida.xlsx");
-        await workbook.xlsx.write(res);
-        res.end();
-    } catch (error) {
-        console.error("Error as exportar grupos:", error);
-        res.status(500).json({ error: "Error as exportar grupos." });
-    } finally {
-        if (connection) connection.release();
-    }
-});
-
-app.get("/api/groups/:id", async (req: Request, res: Response) => {
+app.get("/api/groups/:id", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { id } = req.params;
         connection = await pool.getConnection();
-        const [groupRows]: any[] = await connection.execute(
-            "SELECT * FROM `groups` WHERE id = ?",
-            [id]
-        );
-        if (groupRows.length == 0) {
-            return res.status(404).json({ error: "Grupo não encontrado." });
-        }
+        const [groupRows]: any[] = await connection.execute( "SELECT * FROM `groups` WHERE id = ?", [id] );
+        if (groupRows.length == 0) return res.status(404).json({ error: "Grupo não encontrado." });
         const group = groupRows[0];
-        const [players] = await connection.execute(
-            `SELECT p.id, p.fullName, p.gender, gp.isResponsible, gp.teeColor
-             FROM group_players gp
-             JOIN players p ON gp.playerId = p.id
-             WHERE gp.groupId = ?`,
-            [group.id]
-        );
+        const [players] = await connection.execute( `SELECT p.id, p.fullName, p.gender, gp.isResponsible, gp.teeColor FROM group_players gp JOIN players p ON gp.playerId = p.id WHERE gp.groupId = ?`, [group.id] );
         group.players = players;
         res.json(group);
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro ao buscar detalhes do grupo:", error);
-        res.status(500).json({ error: "Erro ao buscar detalhes do grupo." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.put("/api/groups/:id", async (req: Request, res: Response) => {
+app.put("/api/groups/:id", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { id } = req.params;
         const { startHole, players, responsiblePlayerId, category } = req.body;
+
+        // CORREÇÃO: Converter IDs
+        const numericGroupId = parseInt(id, 10);
+        const numericStartHole = parseInt(startHole, 10);
+        const numericResponsiblePlayerId = parseInt(responsiblePlayerId, 10);
+
         connection = await pool.getConnection();
         await connection.beginTransaction();
-        await connection.execute(
-            "UPDATE `groups` SET startHole = ?, category = ? WHERE id = ?",
-            [startHole, category, id]
-        );
-        await connection.execute("DELETE FROM group_players WHERE groupId = ?", [id]);
+        await connection.execute( "UPDATE `groups` SET startHole = ?, category = ? WHERE id = ?", [numericStartHole, category || null, numericGroupId] ); 
+        await connection.execute("DELETE FROM group_players WHERE groupId = ?", [numericGroupId]);
         for (const player of players) {
-            await connection.execute(
-                "INSERT INTO group_players (groupId, playerId, isResponsible, teeColor) VALUES (?, ?, ?, ?)",
-                [id, player.id, player.id === responsiblePlayerId, player.teeColor]
-            );
+            const numericPlayerId = parseInt(player.id, 10);
+            await connection.execute( "INSERT INTO group_players (groupId, playerId, isResponsible, teeColor) VALUES (?, ?, ?, ?)", [numericGroupId, numericPlayerId, numericPlayerId === numericResponsiblePlayerId, player.teeColor] );
         }
         await connection.commit();
         res.status(200).json({ message: "Grupo atualizado com sucesso!" });
-    } catch (error) {
+    } catch (error: any) {
         if (connection) await connection.rollback();
         console.error("Erro ao atualizar grupo:", error);
-        res.status(500).json({ error: "Erro ao atualizar o grupo." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.delete("/api/groups/:id", async (req: Request, res: Response) => {
+app.delete("/api/groups/:id", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { id } = req.params;
         connection = await pool.getConnection();
         await connection.execute("DELETE FROM `groups` WHERE id = ?", [id]);
         res.status(200).json({ message: "Grupo apagado com sucesso." });
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro ao apagar grupo:", error);
-        res.status(500).json({ error: "Erro ao apagar grupo." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.post("/api/groups/handicaps", async (req: Request, res: Response) => {
+app.post("/api/groups/handicaps", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { groupId, handicaps } = req.body;
-        if (!groupId || !handicaps) {
-            return res.status(400).json({ error: "Dados incompletos." });
-        }
+        if (!groupId || !handicaps) return res.status(400).json({ error: "Dados incompletos." });
         connection = await pool.getConnection();
         for (const playerId in handicaps) {
             const courseHandicap = handicaps[playerId];
-            await connection.execute(
-                "UPDATE group_players SET courseHandicap = ? WHERE groupId = ? AND playerId = ?",
-                [courseHandicap, groupId, playerId]
-            );
+            await connection.execute( "UPDATE group_players SET courseHandicap = ? WHERE groupId = ? AND playerId = ?", [courseHandicap, groupId, playerId] );
         }
         res.status(200).json({ message: "Handicaps atualizados com sucesso." });
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro ao atualizar handicaps:", error);
-        res.status(500).json({ error: "Erro ao atualizar handicaps." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.post("/api/groups/finish", async (req: Request, res: Response) => {
+app.post("/api/groups/finish", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { groupId } = req.body;
-        if (!groupId) {
-            return res.status(400).json({ error: "ID do grupo é obrigatório." });
-        }
+        if (!groupId) return res.status(400).json({ error: "ID do grupo é obrigatório." });
         connection = await pool.getConnection();
-        await connection.execute(
-            "UPDATE `groups` SET status = 'completed' WHERE id = ?",
-            [groupId]
-        );
+        await connection.execute( "UPDATE `groups` SET status = 'completed' WHERE id = ?", [groupId] );
         res.status(200).json({ message: "Rodada finalizada com sucesso!" });
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro ao finalizar rodada:", error);
-        res.status(500).json({ error: "Erro ao finalizar rodada." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.post("/api/login", async (req: Request, res: Response) => {
+app.post("/api/login", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { email, password } = req.body;
-        if (!email || !password) {
-            return res.status(400).json({ success: false, error: "Email e senha são obrigatórios." });
-        }
+        if (!email || !password) return res.status(400).json({ success: false, error: "Email e senha são obrigatórios." });
         connection = await pool.getConnection();
         const query = "SELECT id, fullName, email, role, gender, password FROM players WHERE email = ?";
         const [rows]: any[] = await connection.execute(query, [email]);
-        if (rows.length === 0) {
-            return res.status(401).json({ success: false, error: "Email ou senha inválidos." });
-        }
+        if (rows.length === 0) return res.status(401).json({ success: false, error: "Email ou senha inválidos." });
         const user = rows[0];
         const isMatch = await bcrypt.compare(password, user.password);
         if (isMatch) {
@@ -2014,200 +1927,101 @@ app.post("/api/login", async (req: Request, res: Response) => {
         } else {
             res.status(401).json({ success: false, error: "Email ou senha inválidos." });
         }
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro no login:", error);
-        res.status(500).json({ success: false, error: "Erro interno no servidor." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/scorecard/:accessCode", async (req: Request, res: Response) => {
+app.get("/api/scorecard/:accessCode", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { accessCode } = req.params;
         const { playerId } = req.query;
-        if (!playerId) {
-            return res.status(400).json({ error: "Player ID é obrigatório para aceder ao scorecard." });
-        }
+        if (!playerId) return res.status(400).json({ error: "Player ID é obrigatório para aceder ao scorecard." });
+
+        const numericPlayerId = parseInt(playerId as string, 10);
+
         connection = await pool.getConnection();
         const [groupDetails]: any[] = await connection.execute(
             `SELECT g.id as groupId, g.startHole, g.status, t.id as tournamentId, t.name as tournamentName, c.name as courseName, c.id as courseId
-             FROM \`groups\` g
-             JOIN tournaments t ON g.tournamentId = t.id
-             JOIN courses c ON t.courseId = c.id
-             WHERE g.accessCode = ?`,
-            [accessCode]
+             FROM \`groups\` g JOIN tournaments t ON g.tournamentId = t.id
+             JOIN courses c ON t.courseId = c.id WHERE g.accessCode = ?`, [accessCode]
         );
-        if (groupDetails.length === 0) {
-            return res.status(404).json({ error: "Código de acesso inválido." });
-        }
+        if (groupDetails.length === 0) return res.status(404).json({ error: "Código de acesso inválido." });
         const group = groupDetails[0];
-        const [userRole]: any[] = await connection.execute(
-            "SELECT role FROM players WHERE id = ?",
-            [playerId]
-        );
+        const [userRole]: any[] = await connection.execute( "SELECT role FROM players WHERE id = ?", [numericPlayerId] );
         const isAdmin = userRole.length > 0 && userRole[0].role === "admin";
         if (!isAdmin) {
-            const [playersInGroup]: any[] = await connection.execute(
-                "SELECT playerId FROM group_players WHERE groupId = ?",
-                [group.groupId]
-            );
-            const isPlayerInGroup = playersInGroup.some(
-                (p: { playerId: any }) => p.playerId.toString() === playerId
-            );
-            if (!isPlayerInGroup) {
-                return res.status(403).json({ error: "Acesso negado: você não pertence a este grupo." });
-            }
+            const [playersInGroup]: any[] = await connection.execute( "SELECT playerId FROM group_players WHERE groupId = ?", [group.groupId] );
+            const isPlayerInGroup = playersInGroup.some( (p: { playerId: number }) => p.playerId === numericPlayerId );
+            if (!isPlayerInGroup) return res.status(403).json({ error: "Acesso negado: você não pertence a este grupo." });
         }
         const [players] = await connection.execute(
-            `SELECT p.id, p.fullName, gp.teeColor
-             FROM group_players gp
-             JOIN players p ON gp.playerId = p.id
-             WHERE gp.groupId = ?`,
-            [group.groupId]
+            `SELECT p.id, p.fullName, gp.teeColor FROM group_players gp JOIN players p ON gp.playerId = p.id
+             WHERE gp.groupId = ?`, [group.groupId]
         );
         group.players = players;
-        const [scores] = await connection.execute(
-            "SELECT playerId, holeNumber, strokes FROM scores WHERE groupId = ?",
-            [group.groupId]
-        );
+        const [scores] = await connection.execute( "SELECT playerId, holeNumber, strokes FROM scores WHERE groupId = ?", [group.groupId] );
         group.scores = scores;
-        const [holes]: any[] = await connection.execute(
-            "SELECT id, courseId, holeNumber, par, aerialImageUrl FROM holes WHERE courseId = ? ORDER BY holeNumber",
-            [group.courseId]
-        );
-        for (const hole of holes) {
-            const [tees] = await connection.execute("SELECT * FROM tees WHERE holeId = ?", [hole.id]);
-            hole.tees = tees;
-        }
+        const [holes]: any[] = await connection.execute( "SELECT id, courseId, holeNumber, par, aerialImageUrl FROM holes WHERE courseId = ? ORDER BY holeNumber", [group.courseId] );
+        for (const hole of holes) { const [tees] = await connection.execute("SELECT * FROM tees WHERE holeId = ?", [hole.id]); hole.tees = tees; }
         group.holes = holes;
         res.json(group);
-    } catch (error) {
-        console.error("Error as buscar dados do scorecard:", error);
-        res.status(500).json({ error: "Error as buscar dados do scorecard." });
+    } catch (error: any) {
+        console.error("Erro ao buscar dados do scorecard:", error);
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/leaderboard/:tournamentId", async (req: Request, res: Response) => {
+app.get("/api/leaderboard/:tournamentId", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { tournamentId } = req.params;
         connection = await pool.getConnection();
         const [players]: any[] = await connection.execute(
             `SELECT p.id, p.fullName, p.gender, gp.courseHandicap, g.id as groupId
-             FROM players p
-             JOIN group_players gp ON p.id = gp.playerId
-             JOIN \`groups\` g ON gp.groupId = g.id
-             WHERE g.tournamentId = ?`,
-            [tournamentId]
-        );
+             FROM players p JOIN group_players gp ON p.id = gp.playerId
+             JOIN \`groups\` g ON gp.groupId = g.id WHERE g.tournamentId = ?`, [tournamentId] );
         interface Hole { holeNumber: number; par: number; }
         const [holes] = await connection.execute(
-            `SELECT h.holeNumber, h.par FROM holes h
-             JOIN courses c ON h.courseId = c.id
-             JOIN tournaments t ON c.id = t.courseId
-             WHERE t.id = ? ORDER BY h.holeNumber`,
-            [tournamentId]
-        );
+            `SELECT h.holeNumber, h.par FROM holes h JOIN courses c ON h.courseId = c.id
+             JOIN tournaments t ON c.id = t.courseId WHERE t.id = ? ORDER BY h.holeNumber`, [tournamentId] );
         const parMap = new Map((holes as { holeNumber: number; par: number }[]).map((h) => [h.holeNumber, h.par]));
         for (const player of players) {
-            const [scores] = await connection.execute(
-                "SELECT holeNumber, strokes FROM scores WHERE playerId = ? AND groupId = ?",
-                [player.id, player.groupId]
-            );
+            const [scores] = await connection.execute( "SELECT holeNumber, strokes FROM scores WHERE playerId = ? AND groupId = ?", [player.id, player.groupId] );
             const typedScores = scores as { holeNumber: number; strokes: number }[];
-            player.grossTotal = typedScores.reduce((sum, score) => sum + score.strokes, 0);
+            player.grossTotal = typedScores.reduce((sum, score) => sum + (score.strokes || 0), 0); 
             let toPar = 0;
-            for (const score of typedScores) {
-                toPar += score.strokes - (parMap.get(score.holeNumber) || 0);
-            }
+            for (const score of typedScores) { toPar += (score.strokes || 0) - (parMap.get(score.holeNumber) || 0); } 
             player.toPar = toPar;
             player.netToPar = toPar - (player.courseHandicap || 0);
             player.through = typedScores.length;
         }
         const typedPlayers = players as any[];
-        typedPlayers.sort((a, b) => a.netToPar - b.netToPar);
+        typedPlayers.sort((a, b) => (a.netToPar ?? 999) - (b.netToPar ?? 999)); 
         let rank = 1;
         for (let i = 0; i < typedPlayers.length; i++) {
-            if (i > 0 && typedPlayers[i].netToPar > typedPlayers[i - 1].netToPar) {
-                rank = i + 1;
-            }
+            if (i > 0 && typedPlayers[i].netToPar > typedPlayers[i - 1].netToPar) { rank = i + 1; }
             typedPlayers[i].rank = rank;
         }
         res.json(typedPlayers);
-    } catch (error) {
-        console.error("Error so calcular leaderboard:", error);
-        res.status(500).json({ error: "Error so calcular leaderboard." });
+    } catch (error: any) {
+        console.error("Erro ao calcular leaderboard:", error);
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/history/player/:playerId", async (req: Request, res: Response) => {
-    const { playerId } = req.params;
-    let connection;
-    try {
-        connection = await pool.getConnection();
-
-        const [tournaments]: any[] = await connection.execute(
-            `SELECT
-                t.id,
-                t.name,
-                t.date,
-                t.finishedAt,
-                c.name as courseName,
-                'tournament' as type
-             FROM tournaments t
-             JOIN courses c ON t.courseId = c.id
-             WHERE
-                t.status = 'completed'
-                AND EXISTS (
-                    SELECT 1
-                    FROM \`groups\` g
-                    JOIN group_players gp ON g.id = gp.groupId
-                    WHERE g.tournamentId = t.id AND gp.playerId = ?
-                )`,
-            [playerId]
-        );
-
-        const [trainings]: any[] = await connection.execute(
-            `SELECT
-                t.id,
-                'Sessão de Treino' as name,
-                t.date,
-                t.finishedAt,
-                c.name as courseName,
-                'training' as type,
-                tg.id as groupId
-             FROM trainings t
-             JOIN courses c ON t.courseId = c.id
-             JOIN training_groups tg ON t.id = tg.trainingId
-             WHERE
-                t.status = 'completed'
-                AND EXISTS (
-                    SELECT 1
-                    FROM training_participants tp
-                    WHERE tp.trainingGroupId = tg.id AND tp.playerId = ?
-                )`,
-            [playerId]
-        );
-
-        const history = [...tournaments, ...trainings];
-        history.sort((a, b) => new Date(b.finishedAt).getTime() - new Date(a.finishedAt).getTime());
-
-        res.json(history);
-    } catch (error) {
-        console.error("Erro ao buscar histórico unificado:", error);
-        res.status(500).json({ error: "Erro ao buscar histórico." });
-    } finally {
-        if (connection) connection.release();
-    }
-});
-
-app.get("/api/history/player/:playerId/tournament/:tournamentId", async (req: Request, res: Response) => {
+app.get("/api/history/player/:playerId/tournament/:tournamentId", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { playerId, tournamentId } = req.params;
@@ -2217,212 +2031,115 @@ app.get("/api/history/player/:playerId/tournament/:tournamentId", async (req: Re
              FROM scores s
              JOIN \`groups\` g ON s.groupId = g.id
              JOIN holes h ON s.holeNumber = h.holeNumber
-             JOIN tournaments t ON g.tournamentId = t.id
-             JOIN group_players gp ON g.id = gp.groupId AND s.playerId = s.playerId
+             JOIN tournaments t ON g.tournamentId = t.id AND t.courseId = h.courseId 
+             JOIN group_players gp ON g.id = gp.groupId AND s.playerId = gp.playerId 
              LEFT JOIN tees tee ON h.id = tee.holeId AND gp.teeColor = tee.color
-             WHERE s.playerId = ? AND g.tournamentId = ? AND t.courseId = h.courseId
+             WHERE s.playerId = ? AND g.tournamentId = ?
              ORDER BY s.holeNumber`,
             [playerId, tournamentId]
         );
         res.json(results);
-    } catch (error) {
-        console.error("Error as buscar detalhes do torneio do jogador:", error);
-        res.status(500).json({ error: "Erro ao buscar detalhes do torneio." });
+    } catch (error: any) {
+        console.error("Erro ao buscar detalhes do torneio do jogador:", error);
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-// NOVA ROTA: Exportar resultados de grupo específico
-app.get("/api/tournaments/export/grupo/:groupId", async (req: Request, res: Response) => {
-    const { groupId } = req.params;
-    let connection;
-    try {
-        connection = await pool.getConnection();
-        const [groupInfo]: any[] = await connection.execute(
-            `SELECT t.name as tournamentName, c.name as courseName, g.startHole
-             FROM \`groups\` g
-             JOIN tournaments t ON g.tournamentId = t.id
-             JOIN courses c ON t.courseId = c.id
-             WHERE g.id = ?`, [groupId]
-        );
-
-        if (groupInfo.length === 0) {
-            return res.status(404).send('Grupo não encontrado.');
-        }
-
-        const [players]: any[] = await connection.execute(
-            `SELECT p.id, p.fullName FROM players p JOIN group_players gp ON p.id = gp.playerId WHERE gp.groupId = ?`,
-            [groupId]
-        );
-
-        const [tournament]: any[] = await connection.execute('SELECT courseId FROM tournaments WHERE id = (SELECT tournamentId FROM `groups` WHERE id = ?)', [groupId]);
-        const courseId = tournament[0].courseId;
-
-        const workbook = new ExcelJS.Workbook();
-        const sheet = workbook.addWorksheet(`Grupo - Buraco ${groupInfo[0].startHole}`);
-
-        sheet.mergeCells('A1:D1');
-        sheet.getCell('A1').value = `Resultado do Grupo - ${groupInfo[0].tournamentName}`;
-        sheet.getCell('A1').font = { size: 16, bold: true };
-        sheet.addRow(['Campo', groupInfo[0].courseName]);
-        sheet.addRow([]);
-
-        const headers = ['Buraco', 'Par'];
-        players.forEach((p: any) => headers.push(p.fullName));
-        sheet.addRow(headers).font = { bold: true };
-
-        const [holes]: any[] = await connection.execute(`
-            SELECT holeNumber, par FROM holes WHERE courseId = ? ORDER BY holeNumber
-        `, [courseId]);
-
-        const totals: Record<string, number> = {};
-        players.forEach((p: any) => totals[p.id] = 0);
-
-        for (const hole of holes) {
-            const row: (string | number)[] = [hole.holeNumber, hole.par];
-            for (const player of players) {
-                const [score]: any[] = await connection.execute(
-                    `SELECT strokes FROM scores WHERE groupId = ? AND playerId = ? AND holeNumber = ?`,
-                    [groupId, player.id, hole.holeNumber]
-                );
-                const strokes = score[0]?.strokes || 0;
-                row.push(strokes);
-                totals[player.id] += strokes;
-            }
-            sheet.addRow(row);
-        }
-
-        const totalRow: (string | number)[] = ['Total', ''];
-        players.forEach((p: any) => totalRow.push(totals[p.id]));
-        sheet.addRow(totalRow).font = { bold: true };
-
-        sheet.columns.forEach((column: any) => { column.width = 15; });
-
-        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Disposition', `attachment; filename=resultado_grupo_${groupId}.xlsx`);
-        await workbook.xlsx.write(res);
-        res.end();
-
-    } catch (error) {
-        console.error("Erro ao exportar grupo do torneio:", error);
-        res.status(500).json({ error: "Erro ao exportar." });
-    } finally {
-        if (connection) connection.release();
-    }
-});
-
-app.post("/api/forgot-password", async (req: Request, res: Response) => {
+app.post("/api/forgot-password", async (req: Request, res: Response, next: NextFunction) => {
     const { email } = req.body;
     let connection;
     try {
         connection = await pool.getConnection();
         const [rows]: any[] = await connection.execute("SELECT * FROM players WHERE email = ?", [email]);
         if (rows.length === 0) {
-            return res.status(200).json({
-                message: "Se o seu email estiver em nossa base de dados, você receberá um link para redefinir sua senha."
-            });
+            return res.status(200).json({ message: "Se o seu email estiver em nossa base de dados, você receberá um link para redefinir sua senha." });
         }
         const user = rows[0];
         const token = crypto.randomBytes(20).toString("hex");
-        const expires = new Date(Date.now() + 3600000); // 1 hora
-        await connection.execute(
-            "UPDATE players SET resetPasswordToken = ?, resetPasswordExpires = ? WHERE id = ?",
-            [token, expires, user.id]
-        );
+        const expires = new Date(Date.now() + 3600000); 
+        await connection.execute( "UPDATE players SET resetPasswordToken = ?, resetPasswordExpires = ? WHERE id = ?", [token, expires, user.id] );
+        
+        // CORREÇÃO: Usar variáveis de ambiente para email
         const transporter = nodemailer.createTransport({
             service: "gmail",
-            auth: { user: "suporte.birdify@gmail.com", pass: "free leiz flor vrvq" },
+            auth: { 
+                user: process.env.EMAIL_USER, // <-- CORRIGIDO
+                pass: process.env.EMAIL_PASS  // <-- CORRIGIDO
+            },
         });
         const mailOptions = {
             to: user.email,
-            from: "Birdify <suporte.birdify@gmail.com>",
+            from: `Birdify <${process.env.EMAIL_USER}>`,
             subject: "Redefinição de Senha - Birdify",
             text: `Você está recebendo este email porque você (ou outra pessoa) solicitou a redefinição da sua senha.\n\n` +
                   `Por favor, clique no link a seguir ou cole-o no seu navegador para completar o processo:\n\n` +
-                  `http://localhost:5173/reset/${token}\n\n` +
+                  `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset/${token}\n\n` + // <-- CORRIGIDO
                   `Se você não solicitou isso, por favor, ignore este email e sua senha permanecerá inalterada.\n`,
         };
         await transporter.sendMail(mailOptions);
         res.status(200).json({ message: "Um email foi enviado com as instruções para redefinir a sua senha." });
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro em forgot-password:", error);
-        res.status(500).json({ error: "Erro ao processar o pedido de redefinição de senha." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.post("/api/reset-password", async (req: Request, res: Response) => {
+app.post("/api/reset-password", async (req: Request, res: Response, next: NextFunction) => {
     const { token, password } = req.body;
     let connection;
     try {
         connection = await pool.getConnection();
-        const [rows]: any[] = await connection.execute(
-            "SELECT * FROM players WHERE resetPasswordToken = ? AND resetPasswordExpires > NOW()",
-            [token]
-        );
-        if (rows.length === 0) {
-            return res.status(400).json({ error: "O token para redefinição de senha é inválido ou expirou." });
-        }
-        const user = rows[0];
-        const saltRounds = 10;
-        const hashedPassword = await bcrypt.hash(password, saltRounds);
-        await connection.execute(
-            "UPDATE players SET password = ?, resetPasswordToken = NULL, resetPasswordExpires = NULL WHERE id = ?",
-            [hashedPassword, user.id]
-        );
+        const [rows]: any[] = await connection.execute( "SELECT * FROM players WHERE resetPasswordToken = ? AND resetPasswordExpires > NOW()", [token] );
+        if (rows.length === 0) return res.status(400).json({ error: "O token para redefinição de senha é inválido ou expirou." });
+        const user = rows[0]; const saltRounds = 10; const hashedPassword = await bcrypt.hash(password, saltRounds);
+        await connection.execute( "UPDATE players SET password = ?, resetPasswordToken = NULL, resetPasswordExpires = NULL WHERE id = ?", [hashedPassword, user.id] );
         res.status(200).json({ message: "Sua senha foi redefinida com sucesso!" });
-    } catch (error) {
+    } catch (error: any) {
         console.error("Erro em reset-password:", error);
-        res.status(500).json({ error: "Erro ao redefinir a senha." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-
-app.get("/api/tournaments/:tournamentId/questions", async (req: Request, res: Response) => {
+app.get("/api/tournaments/:tournamentId/questions", async (req: Request, res: Response, next: NextFunction) => {
     const { tournamentId } = req.params;
     let connection;
     try {
         connection = await pool.getConnection();
-        const [questions]: any[] = await connection.execute(
-            'SELECT * FROM tournament_questions WHERE tournamentId = ? ORDER BY id ASC',
-            [tournamentId]
-        );
+        const [questions]: any[] = await connection.execute( 'SELECT * FROM tournament_questions WHERE tournamentId = ? ORDER BY id ASC', [tournamentId] );
         for (const question of questions) {
             if (question.questionType === 'MULTIPLE_CHOICE') {
-                const [options] = await connection.execute(
-                    'SELECT * FROM question_options WHERE questionId = ? ORDER BY id ASC',
-                    [question.id]
-                );
+                const [options] = await connection.execute( 'SELECT * FROM question_options WHERE questionId = ? ORDER BY id ASC', [question.id] );
                 question.options = options;
             }
         }
         res.json(questions);
-    } catch (error) {
-        console.error("Error as buscar perguntas do torneio:", error);
-        res.status(500).json({ error: "Error as buscar perguntas do torneio." });
+    } catch (error: any) {
+        console.error("Erro ao buscar perguntas do torneio:", error);
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.post("/api/tournaments/:tournamentId/questions", async (req: Request, res: Response) => {
+app.post("/api/tournaments/:tournamentId/questions", async (req: Request, res: Response, next: NextFunction) => {
     const { tournamentId } = req.params;
     const { questionText, questionType, isRequired, options } = req.body;
-    if (!questionText || !questionType) {
-        return res.status(400).json({ error: "Texto e tipo da pergunta são obrigatórios." });
-    }
     let connection;
     try {
+        if (!questionText || !questionType) return res.status(400).json({ error: "Texto e tipo da pergunta são obrigatórios." });
         connection = await pool.getConnection();
         await connection.beginTransaction();
-        const [questionResult]: any = await connection.execute(
-            'INSERT INTO tournament_questions (tournamentId, questionText, questionType, isRequired) VALUES (?, ?, ?, ?)',
-            [tournamentId, questionText, questionType, isRequired]
-        );
+        const [questionResult]: any = await connection.execute( 'INSERT INTO tournament_questions (tournamentId, questionText, questionType, isRequired) VALUES (?, ?, ?, ?)', [tournamentId, questionText, questionType, isRequired] );
         const newQuestionId = questionResult.insertId;
         if (questionType == 'MULTIPLE_CHOICE' && options && options.length > 0) {
             const optionValues = options.map((opt: string) => [newQuestionId, opt]);
@@ -2430,92 +2147,96 @@ app.post("/api/tournaments/:tournamentId/questions", async (req: Request, res: R
         }
         await connection.commit();
         res.status(201).json({ message: 'Pergunta criada com sucesso!', questionId: newQuestionId });
-    } catch (error) {
+    } catch (error: any) {
         if (connection) await connection.rollback();
         console.error("Erro ao criar pergunta:", error);
-        res.status(500).json({ error: "Erro ao criar pergunta." });
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.delete("/api/questions/:questionId", async (req: Request, res: Response) => {
+app.delete("/api/questions/:questionId", async (req: Request, res: Response, next: NextFunction) => {
     let connection;
     try {
         const { questionId } = req.params;
         connection = await pool.getConnection();
         await connection.execute('DELETE FROM tournament_questions WHERE id = ?', [questionId]);
         res.status(200).json({ message: 'Pergunta apagada com sucesso.' });
-    } catch (error) {
-        console.error("Error no apagar pergunta:", error);
-        res.status(500).json({ error: "Error no apagar pergunta." });
+    } catch (error: any) {
+        console.error("Erro ao apagar pergunta:", error);
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/tournaments/:tournamentId/registrations-with-answers", async (req: Request, res: Response) => {
+app.get("/api/tournaments/:tournamentId/registrations-with-answers", async (req: Request, res: Response, next: NextFunction) => {
     const { tournamentId } = req.params;
     let connection;
     try {
         connection = await pool.getConnection();
         const [registrations]: any[] = await connection.execute(
             `SELECT r.id, r.paymentStatus, p.fullName, p.email
-             FROM tournament_registrations r
-             JOIN players p ON r.playerId = p.id
-             WHERE r.tournamentId = ?
-             ORDER BY p.fullName ASC`,
-            [tournamentId]
+             FROM tournament_registrations r JOIN players p ON r.playerId = p.id
+             WHERE r.tournamentId = ? ORDER BY p.fullName ASC`, [tournamentId]
         );
         for (const reg of registrations) {
             const [answers]: any[] = await connection.execute(
-                `SELECT q.questionText, a.answer
-                 FROM registration_answers a
-                 JOIN tournament_questions q ON a.questionId = q.id
-                 WHERE a.registrationId = ?
-                 ORDER BY q.id ASC`,
-                [reg.id]
+                `SELECT q.questionText, a.answer FROM registration_answers a JOIN tournament_questions q ON a.questionId = q.id
+                 WHERE a.registrationId = ? ORDER BY q.id ASC`, [reg.id]
             );
             reg.answers = answers;
         }
         res.json(registrations);
-    } catch (error) {
-        console.error("Error ao buscar inscrições com respostas:", error);
-        res.status(500).json({ error: "Error ao buscar dados de inscrição." });
+    } catch (error: any) {
+        console.error("Erro ao buscar inscrições com respostas:", error);
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.post("/api/scores/hole", async (req: Request, res: Response) => {
+app.post("/api/scores/hole", async (req: Request, res: Response, next: NextFunction) => {
     const { groupId, holeNumber, scores } = req.body;
-    if (!groupId || !holeNumber || !scores || !Array.isArray(scores)) {
-        return res.status(400).json({ error: "Dados incompletos ou em formato inválido." });
-    }
     let connection;
     try {
+        if (!groupId || !holeNumber || !scores || !Array.isArray(scores)) return res.status(400).json({ error: "Dados incompletos ou em formato inválido." });
+
+        // CORREÇÃO: Converter IDs
+        const numericGroupId = parseInt(groupId, 10);
+        const numericHoleNumber = parseInt(holeNumber, 10);
+
         connection = await pool.getConnection();
         await connection.beginTransaction();
         for (const score of scores) {
             if (score.strokes === null || score.strokes === undefined) continue;
-            const query = `INSERT INTO scores (groupId, playerId, holeNumber, strokes)
-                           VALUES (?, ?, ?, ?)
-                           ON DUPLICATE KEY UPDATE strokes = ?`;
-            await connection.execute(query, [groupId, score.playerId, holeNumber, score.strokes, score.strokes]);
+            
+            const numericPlayerId = parseInt(score.playerId, 10);
+            const numericStrokes = parseInt(score.strokes, 10);
+
+            if (isNaN(numericPlayerId) || isNaN(numericStrokes)) continue; // Ignora se for inválido
+
+            const query = `INSERT INTO scores (groupId, playerId, holeNumber, strokes) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE strokes = ?`;
+            await connection.execute(query, [numericGroupId, numericPlayerId, numericHoleNumber, numericStrokes, numericStrokes]);
         }
         await connection.commit();
         res.status(200).json({ message: "Pontuações do buraco salvas com sucesso." });
-    } catch (error) {
+    } catch (error: any) {
         if (connection) await connection.rollback();
-        console.error("Error as salvar pontuacoes do buraco:", error);
-        res.status(500).json({ error: "Error no servidor as salvar pontuacoes." });
+        console.error("Erro ao salvar pontuações do buraco:", error);
+        const errorMessage = error.sqlMessage || error.message || "Erro desconhecido no servidor.";
+        res.status(500).json({ error: errorMessage });
     } finally {
         if (connection) connection.release();
     }
 });
 
 app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+    console.log(`[${new Date().toISOString()}] - ${req.method} ${req.url}`);
     next();
 });
 
@@ -2524,146 +2245,55 @@ app.get('/api/teste-debug', async (req, res) => {
     res.json({ message: 'Teste OK - Verifique o terminal!' });
 });
 
-app.get("/api/debug/tournaments/:tournamentId/registrations", async (req: Request, res: Response) => {
+app.get("/api/debug/tournaments/:tournamentId/registrations", async (req: Request, res: Response, next: NextFunction) => {
     const { tournamentId } = req.params;
     let connection;
     try {
         connection = await pool.getConnection();
         const query = `
-            SELECT
-                tr.id,
-                tr.playerId as player_id,
-                tr.tournamentId as tournament_id,
-                tr.paymentStatus as payment_status,
-                tr.registrationDate as registration_date,
-                p.fullName,
-                p.email
-            FROM tournament_registrations tr
-            INNER JOIN players p ON tr.playerId = p.id
-            WHERE tr.tournamentId = ?
-            ORDER BY tr.registrationDate DESC
-        `;
+            SELECT tr.id, tr.playerId as player_id, tr.tournamentId as tournament_id, tr.paymentStatus as payment_status,
+                   tr.registrationDate as registration_date, p.fullName, p.email
+            FROM tournament_registrations tr INNER JOIN players p ON tr.playerId = p.id
+            WHERE tr.tournamentId = ? ORDER BY tr.registrationDate DESC`;
         const [rows] = await connection.execute(query, [tournamentId]);
         const formattedRegistrations = (rows as any[]).map(row => ({
-            id: row.id,
-            player_id: row.player_id,
-            tournament_id: row.tournament_id,
-            payment_status: row.payment_status,
-            registration_date: row.registration_date,
-            player: {
-                fullName: row.fullName,
-                email: row.email
-            }
+            id: row.id, player_id: row.player_id, tournament_id: row.tournament_id, payment_status: row.payment_status,
+            registration_date: row.registration_date, player: { fullName: row.fullName, email: row.email }
         }));
         res.json(formattedRegistrations);
     } catch (error: any) {
         console.error('❌ DEBUG - ERRO COMPLETO:', error);
-        res.status(500).json({
-            error: 'Erro ao buscar inscritos.',
-            debug: { message: error.message, sqlMessage: error.sqlMessage, code: error.code }
-        });
+        next(error);
     } finally {
         if (connection) connection.release();
     }
 });
 
-app.get("/api/export/scorecard/:type/:groupId", async (req: Request, res: Response) => {
-    const { type, groupId } = req.params;
-    const { playerId } = req.query; // Para exportação individual
+// ===================================================================
+// ERROR HANDLER GLOBAL - Deve ser o ÚLTIMO middleware
+// ===================================================================
+app.use((err: any, req: Request, res: Response, next: Function) => {
+  console.error("\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+  console.error("!!! ERRO GLOBAL CAPTURADO PELO HANDLER !!!");
+  console.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+  console.error("Timestamp:", new Date().toISOString());
+  console.error("Rota:", req.method, req.originalUrl);
+  console.error("Body Recebido:", req.body);
+  console.error("Erro Completo:", err);
+  console.error("Stack Trace:", err.stack);
+  console.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n");
 
-    if (type !== 'training' && type !== 'tournament') {
-        return res.status(400).send('Tipo de exportação inválido. Use "training" ou "tournament".');
-    }
-
-    let connection;
-    try {
-        connection = await pool.getConnection();
-
-        const isTournament = type === 'tournament';
-        const infoQuery = isTournament
-            ? `SELECT t.name as eventName, t.date, c.name as courseName, c.id as courseId FROM \`groups\` g JOIN tournaments t ON g.tournamentId = t.id JOIN courses c ON t.courseId = c.id WHERE g.id = ?`
-            : `SELECT 'Sessão de Treino' as eventName, t.date, c.name as courseName, c.id as courseId FROM training_groups tg JOIN trainings t ON tg.trainingId = t.id JOIN courses c ON t.courseId = c.id WHERE tg.id = ?`;
-
-        const [eventInfo]: any[] = await connection.execute(infoQuery, [groupId]);
-        if (eventInfo.length === 0) return res.status(404).send('Grupo não encontrado.');
-
-        const { eventName, date, courseName, courseId } = eventInfo[0];
-
-        // Busca dados do campo (buracos e tees)
-        const [holes]: any[] = await connection.execute("SELECT * FROM holes WHERE courseId = ? ORDER BY holeNumber ASC", [courseId]);
-        for (const hole of holes) {
-            const [tees] = await connection.execute("SELECT * FROM tees WHERE holeId = ?", [hole.id]);
-            hole.tees = tees;
-        }
-        const courseData = { holes }; // Passa a estrutura completa para a função
-
-        let playersQuery: string;
-        let queryParams: (string | number)[];
-
-        // Define a query para buscar jogadores (individual ou grupo)
-        if (playerId) { // Exportação Individual
-            if (isTournament) {
-                playersQuery = `SELECT p.id, p.fullName, p.gender, gp.courseHandicap FROM players p JOIN group_players gp ON p.id = gp.playerId WHERE gp.groupId = ? AND p.id = ?`;
-                queryParams = [groupId, playerId as string];
-            } else { // Treino Individual
-                playersQuery = `SELECT p.id, p.fullName, p.gender, tp.courseHandicap FROM players p JOIN training_participants tp ON p.id = tp.playerId WHERE tp.trainingGroupId = ? AND p.id = ?`;
-                queryParams = [groupId, playerId as string];
-            }
-        } else { // Exportação de Grupo
-            if (isTournament) {
-                playersQuery = `SELECT p.id, p.fullName, p.gender, gp.courseHandicap FROM players p JOIN group_players gp ON p.id = gp.playerId WHERE gp.groupId = ? ORDER BY p.fullName`;
-                queryParams = [groupId];
-            } else { // Treino Grupo
-                playersQuery = `SELECT p.id, p.fullName, p.gender, tp.courseHandicap FROM players p JOIN training_participants tp ON p.id = tp.playerId WHERE tp.trainingGroupId = ? AND tp.invitationStatus = 'accepted' ORDER BY p.fullName`;
-                queryParams = [groupId];
-            }
-        }
-
-        const [players]: any[] = await connection.execute(playersQuery, queryParams);
-
-        if (players.length === 0) {
-             return res.status(404).send(playerId ? 'Jogador não encontrado neste grupo.' : 'Nenhum jogador encontrado neste grupo.');
-        }
-
-        // Busca os scores para os jogadores selecionados
-        for (const player of (players as ScorecardPlayer[])) {
-             player.playerId = player.id; // Garante que playerId existe para consistência
-             const scoresQuery = isTournament
-                 ? `SELECT h.holeNumber, s.strokes FROM holes h LEFT JOIN scores s ON h.holeNumber = s.holeNumber AND s.playerId = ? AND s.groupId = ? WHERE h.courseId = ? ORDER BY h.holeNumber ASC`
-                 : `SELECT h.holeNumber, s.strokes FROM holes h LEFT JOIN training_scores s ON h.holeNumber = s.holeNumber AND s.playerId = ? AND s.trainingGroupId = ? WHERE h.courseId = ? ORDER BY h.holeNumber ASC`;
-
-             const [scores] = await connection.execute(scoresQuery, [player.id, groupId, courseId]);
-             player.scores = scores as any;
-             // Calcula totais
-              player.totalStrokes = player.scores.reduce((sum, s) => sum + (s.strokes || 0), 0);
-              player.netScore = player.totalStrokes - (player.courseHandicap ?? 0);
-              // Define tieBreakReason como vazio para evitar erros
-              player.tieBreakReason = '';
-              player.tieBreakScores = { last9: 0, last6: 0, last3: 0, last1: 0 }; // Default para evitar erros
-        }
-
-        const workbook = new ExcelJS.Workbook();
-        const sheet = workbook.addWorksheet(playerId ? players[0].fullName : `Grupo ${groupId}`);
-
-        // Usa a função atualizada para construir a planilha
-        await buildHorizontalScorecard(sheet, eventName, `${courseName} - ${new Date(date).toLocaleDateString('pt-BR', {timeZone: 'UTC'})}`, courseData, players);
-
-        const fileName = playerId ? `scorecard_individual_${players[0].fullName.replace(/\s+/g, '_')}.xlsx` : `scorecard_${type}_grupo_${groupId}.xlsx`;
-
-        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
-        await workbook.xlsx.write(res);
-        res.end();
-
-    } catch (error) {
-        console.error(`Erro ao exportar scorecard de ${type}:`, error);
-        res.status(500).json({ error: "Erro ao exportar." });
-    } finally {
-        if (connection) connection.release();
-    }
+  res.status(500).json({
+    error: "Erro Interno do Servidor.",
+    message: err.message || "Ocorreu um erro inesperado.",
+    sqlMessage: err.sqlMessage || undefined,
+    sqlState: err.sqlState || undefined,
+  });
 });
-
+// ===================================================================
 
 app.listen(port, () => {
-    console.log(`✅ Servidor backend rodando em http://localhost:${port}`);
+    console.log(`✅ Servidor backend (Versão Corrigida) rodando em http://localhost:${port}`);
 });
+
+console.log("--- FIM DO FICHEIRO server.ts ---");
